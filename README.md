@@ -37,19 +37,20 @@ CNC machine (simulated)          Edge agent
 
 ## Roadmap
 
--  HAL: `Machine` interface and `Status` type
--  CNC simulator as a state machine
--  Simulator HTTP server publishing MTConnect XML
--  MTConnect adapter
--  Poller that reports changes
--  Agent program wiring it together
--  Tests and continuous integration
--  Running on a Raspberry Pi
--  Store-and-forward: no events lost when the network drops
+- HAL: `Machine` interface and `Status` type
+- CNC simulator as a state machine
+- Simulator HTTP server publishing MTConnect XML
+- MTConnect adapter
+- Poller that reports changes
+- Agent program wiring it together
+- Tests and continuous integration
+- Running on a Raspberry Pi
+- Store-and-forward: no events lost when the network drops
 
 ## Running it
 
-Instructions will go here once the simulator is done.
+go run ./cmd/simulation/
+open localhost link & refresh the page to see machine status snapshots
 
 ## Built with
 
