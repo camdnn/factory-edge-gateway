@@ -18,12 +18,12 @@ const (
 
 // Status is one observation of a machine at a point in time
 type Status struct {
-	MachineID  string    // Unique MachineID
-	State      State     // Normalized State
-	PartCount  int64     // Total Parts Made
-	SpindleRPM float64   // How fast cutting tool spins
-	AlarmCode  string    // Machines error code
-	ObservedAt time.Time // When agent reads status
+	MachineID  string    `json:"machine_id"`           // Unique MachineID
+	State      State     `json:"state"`                // Normalized State
+	PartCount  int64     `json:"part_count"`           // Total Parts Made
+	SpindleRPM float64   `json:"spindle_rpm"`          // How fast cutting tool spins
+	AlarmCode  string    `json:"alarm_code,omitempty"` // Machines error code
+	ObservedAt time.Time `json:"observed_at"`          // When agent reads status
 }
 
 type Machine interface {
