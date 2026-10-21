@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/twmb/franz-go/pkg/kerr"
 	"github.com/twmb/franz-go/pkg/kgo"
 
 	"github.com/camdnn/factory-edge-gateway/internal/mtconnect"
@@ -33,15 +34,19 @@ func main() {
 	defer stop()
 
 	// franz-go defaults to acks=all with an idempotent producer
-	kc, err := kgo.NewClient(
-		kgo.SeedBrokers(strings.Split(*brokers, ",")...),
-		kgo.DefaultProduceTopic(*topic),
-		kgo.AllowAutoTopicCreation(),
-	)
-	if err != nil {
-		log.Fatal(err)
+	newClient := func() *kgo.Client {
+		kc, err := kgo.NewClient(
+			kgo.SeedBrokers(strings.Split(*brokers, ",")...),
+			kgo.DefaultProduceTopic(*topic),
+			kgo.AllowAutoTopicCreation(),
+		)
+		if err != nil {
+			log.Fatal(err)
+		}
+		return kc
 	}
-	defer kc.Close()
+	kc := newClient()
+	defer func() { kc.Close() }()
 
 	client := &mtconnect.Client{BaseURL: *agent, HTTP: &http.Client{Timeout: 10 * time.Second}, Count: 1000}
 
@@ -74,6 +79,13 @@ func main() {
 		// blocks while Kafka is down; the cursor stays put, so nothing is skipped
 		if err := kc.ProduceSync(ctx, records...).FirstErr(); err != nil {
 			log.Printf("produce: %v", err)
+			// the topic was deleted and recreated (e.g. Kafka's data was wiped): this client
+			// keeps sending to the old topic ID forever, so start over with a fresh one
+			if errors.Is(err, kerr.UnknownTopicID) {
+				log.Printf("topic %s was recreated in Kafka; reconnecting", *topic)
+				kc.Close()
+				kc = newClient()
+			}
 			sleep(ctx, *interval)
 			continue
 		}

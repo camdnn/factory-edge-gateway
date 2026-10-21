@@ -7,6 +7,7 @@ import (
 	"context"
 	_ "embed"
 	"encoding/json"
+	"errors"
 	"flag"
 	"log"
 	"net/http"
@@ -14,7 +15,9 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
+	"github.com/twmb/franz-go/pkg/kerr"
 	"github.com/twmb/franz-go/pkg/kgo"
 
 	"github.com/camdnn/factory-edge-gateway/internal/mtconnect"
@@ -40,16 +43,22 @@ func main() {
 	}
 	defer store.Close()
 
-	kc, err := kgo.NewClient(
-		kgo.SeedBrokers(strings.Split(*brokers, ",")...),
-		kgo.ConsumerGroup(*group),
-		kgo.ConsumeTopics(*topic),
-		kgo.DisableAutoCommit(),
-	)
-	if err != nil {
-		log.Fatal(err)
+	newClient := func() *kgo.Client {
+		kc, err := kgo.NewClient(
+			kgo.SeedBrokers(strings.Split(*brokers, ",")...),
+			kgo.ConsumerGroup(*group),
+			kgo.ConsumeTopics(*topic),
+			kgo.DisableAutoCommit(),
+			// if Kafka loses data, re-read everything it still has; the store ignores duplicates
+			kgo.ConsumeResetOffset(kgo.NewOffset().AtStart()),
+		)
+		if err != nil {
+			log.Fatal(err)
+		}
+		return kc
 	}
-	defer kc.Close()
+	kc := newClient()
+	defer func() { kc.Close() }()
 
 	go serve(*addr, store)
 
@@ -58,7 +67,12 @@ func main() {
 		if ctx.Err() != nil || fetches.IsClientClosed() {
 			return
 		}
+		recreated := false
 		fetches.EachError(func(topic string, partition int32, err error) {
+			if errors.Is(err, kerr.UnknownTopicID) {
+				recreated = true
+				return
+			}
 			log.Printf("fetch %s/%d: %v", topic, partition, err)
 		})
 
@@ -83,6 +97,19 @@ func main() {
 		}
 		if len(records) > 0 {
 			log.Printf("consumed %d records, %d new", len(records), inserted)
+		}
+
+		// the topic was deleted and recreated (e.g. Kafka's data was wiped): this client
+		// keeps asking for the old topic ID forever, so start over with a fresh one
+		if recreated {
+			log.Printf("topic %s was recreated in Kafka; reconnecting and re-reading it from the start", *topic)
+			kc.Close()
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(2 * time.Second):
+			}
+			kc = newClient()
 		}
 	}
 }
