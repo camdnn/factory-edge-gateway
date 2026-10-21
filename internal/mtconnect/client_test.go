@@ -41,31 +41,37 @@ func TestClientNext(t *testing.T) {
 	c := &Client{BaseURL: srv.URL, HTTP: srv.Client(), Count: 1000}
 	ctx := context.Background()
 
-	step := func(cur Cursor, wantPath string, wantGap bool, want Cursor) Cursor {
+	step := func(cur Cursor, wantPath string, wantGap *Gap, want Cursor) Cursor {
 		t.Helper()
 		next, obs, gap, err := c.Next(ctx, cur)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if agent.lastPath != wantPath || gap != wantGap || next != want || len(obs) != 1 {
-			t.Fatalf("Next(%+v) = %+v gap=%v obs=%d via %s; want %+v gap=%v via %s",
+		gapOK := (gap == nil) == (wantGap == nil) && (gap == nil || *gap == *wantGap)
+		if agent.lastPath != wantPath || !gapOK || next != want || len(obs) != 1 {
+			t.Fatalf("Next(%+v) = %+v gap=%+v obs=%d via %s; want %+v gap=%+v via %s",
 				cur, next, gap, len(obs), agent.lastPath, want, wantGap, wantPath)
 		}
 		return next
 	}
 
 	// first run takes a snapshot, no gap
-	cur := step(Cursor{}, "/current", false, Cursor{InstanceID: 7, Next: 200})
+	cur := step(Cursor{}, "/current", nil, Cursor{InstanceID: 7, Next: 200})
 
 	// new data arrives: resume from where we left off
 	agent.next = 250
-	cur = step(cur, "/sample", false, Cursor{InstanceID: 7, Next: 250})
+	cur = step(cur, "/sample", nil, Cursor{InstanceID: 7, Next: 250})
 
-	// we fell behind the ring buffer: report a gap and resnapshot
+	// we fell behind the ring buffer: sequences 250..399 are gone, resnapshot
 	agent.first, agent.next = 300, 400
-	cur = step(cur, "/current", true, Cursor{InstanceID: 7, Next: 400})
+	cur = step(cur, "/current",
+		&Gap{InstanceID: 7, From: 250, ResumedAt: 400, Missed: 150, Reason: GapFellBehind},
+		Cursor{InstanceID: 7, Next: 400})
 
-	// agent restarted with a new instance whose buffer happens to cover our cursor
+	// agent restarted with a new instance whose buffer happens to cover our cursor:
+	// how much the old instance produced after 400 is unknowable
 	agent.instance, agent.first, agent.next = 8, 1, 500
-	step(cur, "/current", true, Cursor{InstanceID: 8, Next: 500})
+	step(cur, "/current",
+		&Gap{InstanceID: 7, From: 400, ResumedAt: 500, Missed: 0, Reason: GapAgentRestarted},
+		Cursor{InstanceID: 8, Next: 500})
 }

@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Cursor is where to resume reading from an agent. The zero value means
@@ -24,12 +25,31 @@ type Client struct {
 	Count   int // max observations per /sample request
 }
 
+// GapReason says why observations could not be collected.
+type GapReason string
+
+const (
+	GapAgentRestarted GapReason = "agent restarted"
+	GapFellBehind     GapReason = "fell behind the agent's buffer"
+)
+
+// Gap describes observations the agent no longer has, so they were never collected.
+type Gap struct {
+	DetectedAt time.Time `json:"detected_at"`
+	InstanceID uint64    `json:"instance_id"`   // agent instance the missed sequences belonged to
+	From       uint64    `json:"from_sequence"` // first sequence never collected
+	ResumedAt  uint64    `json:"resumed_at"`    // sequence collection resumed at (in the agent's current instance)
+	Missed     uint64    `json:"missed"`        // 0 when unknowable (the agent restarted)
+	Reason     GapReason `json:"reason"`
+}
+
 // Next returns every observation after cur and the cursor to use next time.
-// gap is true when data was lost because the agent restarted or we fell
+// gap is non-nil when data was lost because the agent restarted or we fell
 // behind its ring buffer; the caller resumes from a fresh /current snapshot.
-func (c *Client) Next(ctx context.Context, cur Cursor) (next Cursor, obs []Observation, gap bool, err error) {
+func (c *Client) Next(ctx context.Context, cur Cursor) (next Cursor, obs []Observation, gap *Gap, err error) {
 	if cur.Next == 0 {
-		return c.current(ctx)
+		next, obs, err = c.current(ctx)
+		return next, obs, nil, err
 	}
 
 	q := url.Values{"from": {strconv.FormatUint(cur.Next, 10)}, "count": {strconv.Itoa(c.Count)}}
@@ -39,23 +59,32 @@ func (c *Client) Next(ctx context.Context, cur Cursor) (next Cursor, obs []Obser
 	case errors.As(err, &ae) && ae.Code == "OUT_OF_RANGE":
 		// asked for sequences the agent already dropped (or never had after a restart)
 	case err != nil:
-		return cur, nil, false, err
+		return cur, nil, nil, err
 	case h.InstanceID != cur.InstanceID || cur.Next < h.FirstSequence:
-		// agent restarted: our sequence numbers mean nothing in its new buffer
+		// agent restarted, or our sequences already left its buffer
 	default:
-		return Cursor{InstanceID: h.InstanceID, Next: h.NextSequence}, obs, false, nil
+		return Cursor{InstanceID: h.InstanceID, Next: h.NextSequence}, obs, nil, nil
 	}
 
-	next, obs, _, err = c.current(ctx)
-	return next, obs, err == nil, err
+	next, obs, err = c.current(ctx)
+	if err != nil {
+		return cur, nil, nil, err
+	}
+	gap = &Gap{InstanceID: cur.InstanceID, From: cur.Next, ResumedAt: next.Next, Reason: GapFellBehind}
+	if next.InstanceID != cur.InstanceID {
+		gap.Reason = GapAgentRestarted
+	} else {
+		gap.Missed = next.Next - cur.Next
+	}
+	return next, obs, gap, nil
 }
 
-func (c *Client) current(ctx context.Context) (Cursor, []Observation, bool, error) {
+func (c *Client) current(ctx context.Context) (Cursor, []Observation, error) {
 	h, obs, err := c.get(ctx, "/current")
 	if err != nil {
-		return Cursor{}, nil, false, err
+		return Cursor{}, nil, err
 	}
-	return Cursor{InstanceID: h.InstanceID, Next: h.NextSequence}, obs, false, nil
+	return Cursor{InstanceID: h.InstanceID, Next: h.NextSequence}, obs, nil
 }
 
 func (c *Client) get(ctx context.Context, path string) (Header, []Observation, error) {

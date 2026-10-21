@@ -5,72 +5,149 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Machine Status</title>
 <style>
-  :root { --bg: #f6f7f9; --card: #fff; --fg: #1b1f24; --muted: #667085; --line: #e3e6ea;
-          --ok: #1a7f37; --warn: #9a6700; --bad: #cf222e; }
-  @media (prefers-color-scheme: dark) {
-    :root { --bg: #0e1116; --card: #161b22; --fg: #e6edf3; --muted: #8b949e; --line: #30363d;
-            --ok: #3fb950; --warn: #d29922; --bad: #f85149; }
+  :root {
+    --bg: #0b0d10; --panel: #12151a; --line: #222831; --fg: #e8eaed; --muted: #8b93a1;
+    --ok: #5fd68a; --warn: #f2b232; --bad: #ff6b6b; --off: #9aa3ae;
+    --alarm-row: rgba(255, 82, 82, .14); --warn-row: rgba(242, 178, 50, .10);
   }
-  body { margin: 0; padding: 24px 16px; background: var(--bg); color: var(--fg);
-         font: 15px/1.4 system-ui, -apple-system, sans-serif; }
-  header { max-width: 1100px; margin: 0 auto 16px; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
-  h1 { font-size: 20px; margin: 0; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.4 system-ui, -apple-system, sans-serif; }
+  .num { font-variant-numeric: tabular-nums; }
   .muted { color: var(--muted); }
-  main { max-width: 1100px; margin: 0 auto; display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
-  section { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 16px; min-width: 0; }
-  h2 { font-size: 17px; margin: 0 0 2px; }
-  dl { display: grid; grid-template-columns: auto 1fr; gap: 6px 16px; margin: 12px 0; }
-  dt { color: var(--muted); }
-  dd { margin: 0; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
-  .ACTIVE, .Normal { color: var(--ok); } .READY, .Warning { color: var(--warn); }
-  .STOPPED, .INTERRUPTED, .Fault { color: var(--bad); }
-  details { margin-top: 8px; } summary { cursor: pointer; color: var(--muted); }
-  table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 8px; }
-  td { border-top: 1px solid var(--line); padding: 4px 6px 4px 0; vertical-align: top; overflow-wrap: anywhere; }
+  .wrap { display: grid; grid-template-columns: minmax(0, 1fr) 320px; min-height: 100vh; }
+  main { padding: 24px 28px; min-width: 0; }
+  aside { background: var(--panel); border-left: 1px solid var(--line); padding: 24px 20px; }
+  h3 { margin: 0 0 12px; font-size: 12px; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
+
+  /* pipeline strip */
+  .pipe { display: grid; grid-template-columns: 1.4fr repeat(4, 1fr); gap: 1px; background: var(--line); border-radius: 12px; overflow: hidden; margin-bottom: 24px; }
+  .pipe > div { background: var(--panel); padding: 14px 16px; min-width: 0; }
+  .k { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
+  .v { font-size: 22px; font-weight: 600; margin-top: 4px; }
+  .sub { font-size: 12px; color: var(--muted); margin-top: 4px; }
+  .verdict .v { font-size: 26px; }
+  .Healthy { color: var(--ok); } .Degraded { color: var(--warn); } .Down { color: var(--bad); }
+
+  /* andon table */
+  table { width: 100%; border-collapse: collapse; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+  th { text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); padding: 12px 14px; border-bottom: 1px solid var(--line); font-weight: 600; }
+  td { padding: 14px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  tr.machine { cursor: pointer; }
+  tr.machine:hover td { background: rgba(255,255,255,.03); }
+  tr.Alarm td { background: var(--alarm-row); } tr.Warning td { background: var(--warn-row); }
+  .name { font-size: 18px; font-weight: 700; }
+  .pill { display: inline-block; min-width: 84px; text-align: center; padding: 4px 10px; border-radius: 99px; font-weight: 700; font-size: 13px; }
+  .pill.Alarm { background: #e53935; color: #fff; } .pill.Warning { background: var(--warn); color: #1a1300; }
+  .pill.Offline { background: #3a3f47; color: #cfd3da; } .pill.OK { background: #183323; color: var(--ok); }
+  .reason { font-weight: 500; }
+  tr.details td { background: var(--bg); padding: 0 14px 14px; }
+  .items { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 4px 18px; font-size: 13px; padding-top: 12px; }
+  .items div { display: flex; justify-content: space-between; gap: 8px; border-bottom: 1px dotted var(--line); padding: 3px 0; }
+  .items span:last-child { text-align: right; overflow-wrap: anywhere; }
+
+  /* events rail */
+  .ev { padding: 10px 0; border-bottom: 1px solid var(--line); font-size: 13px; }
+  .ev time { color: var(--muted); display: block; font-size: 11px; }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; vertical-align: 1px; }
+  .dot.Alarm { background: var(--bad); } .dot.Warning { background: var(--warn); } .dot.Offline { background: var(--off); } .dot.OK { background: var(--ok); } .dot.gap { background: #8ab4ff; }
+  footer { margin-top: 14px; font-size: 12px; color: var(--muted); }
+
+  .sub, .ev, td { overflow-wrap: anywhere; }
+  @media (max-width: 1000px) {
+    .wrap { grid-template-columns: 1fr; min-height: 0; } aside { border-left: 0; border-top: 1px solid var(--line); }
+    .pipe { grid-template-columns: 1fr 1fr; } .pipe .verdict { grid-column: 1 / -1; }
+    .hide-narrow { display: none; }
+  }
+  @media (max-width: 600px) {
+    main, aside { padding: 16px; }
+    .hide-phone { display: none; }
+    td, th { padding: 10px 8px; } .pill { min-width: 0; } .name { font-size: 16px; }
+  }
 </style>
 </head>
 <body>
-<header>
-  <h1>Machine status <span class="muted">· live MTConnect via Kafka</span></h1>
-  <span class="muted" id="stats">connecting…</span>
-</header>
-<main id="devices"></main>
+<div class="wrap">
+  <main>
+    <section class="pipe" id="pipe" aria-label="Pipeline health"></section>
+    <table aria-label="Machines">
+      <thead><tr><th>Status</th><th>Machine</th><th>Why</th><th class="hide-phone">Run state</th><th class="hide-narrow">Spindle</th>
+        <th class="hide-narrow">Parts</th><th class="hide-narrow">Program</th><th>Last observation</th></tr></thead>
+      <tbody id="machines"><tr><td colspan="8" class="muted">Loading…</td></tr></tbody>
+    </table>
+    <footer id="footer"></footer>
+  </main>
+  <aside><h3>Recent events</h3><div id="events"></div></aside>
+</div>
 <script>
-// headline data items shown on each card, in this order
-const HEADLINE = ["Execution", "ControllerMode", "PartCount", "RotaryVelocity", "SpindleSpeed", "Program"];
-
+const ICON = { Alarm: "🔴", Warning: "🟠", Offline: "⚪", OK: "🟢" };
+const open = new Set(), details = {};
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
-const ago = t => { const s = Math.max(0, Math.round((Date.now() - new Date(t)) / 1000));
-  return s < 60 ? `${s}s ago` : s < 3600 ? `${Math.round(s / 60)}m ago` : `${Math.round(s / 3600)}h ago`; };
-const level = v => String(v).split(":")[0];
+const ago = t => {
+  if (!t) return "never";
+  const s = Math.max(0, Math.round((Date.now() - new Date(t)) / 1000));
+  return s < 60 ? `${s}s ago` : s < 3600 ? `${Math.round(s / 60)}m ago` : s < 86400 ? `${Math.round(s / 3600)}h ago` : `${Math.round(s / 86400)}d ago`;
+};
+const clock = t => new Date(t).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+const gapText = g => `${g.missed ? g.missed.toLocaleString() + " observations missed" : "unknown number missed"} · ${g.reason}`;
+
+function renderPipeline(p) {
+  document.getElementById("pipe").innerHTML = `
+    <div class="verdict"><div class="k">Pipeline</div><div class="v ${p.verdict}">${p.verdict}</div><div class="sub">${esc(p.why)}</div></div>
+    <div><div class="k">Lag</div><div class="v num">${p.lag.toLocaleString()}</div><div class="sub">observations waiting in Kafka</div></div>
+    <div><div class="k">Last received</div><div class="v num">${ago(p.last_received)}</div><div class="sub">by this laptop</div></div>
+    <div><div class="k">MTConnect agent</div><div class="v">${esc(p.agent)}</div><div class="sub">source of all observations</div></div>
+    <div><div class="k">Last gap</div><div class="v">${p.last_gap ? ago(p.last_gap.detected_at) : "none"}</div>
+      <div class="sub">${p.last_gap ? esc(gapText(p.last_gap)) : "no observations ever missed"}</div></div>`;
+}
+
+function renderMachines(ms) {
+  document.getElementById("machines").innerHTML = ms.map(m => `
+    <tr class="machine ${m.status}" data-name="${esc(m.name)}" title="Show all data items">
+      <td><span class="pill ${m.status}">${m.status}</span></td>
+      <td class="name">${esc(m.name)}</td>
+      <td><div class="reason">${esc(m.reason)}</div>${m.since ? `<div class="sub">since ${ago(m.since)}</div>` : ""}</td>
+      <td class="hide-phone">${esc(m.run_state || "—")}</td>
+      <td class="num hide-narrow">${m.spindle ? Number(m.spindle).toLocaleString() + " rpm" : "—"}</td>
+      <td class="num hide-narrow">${esc(m.part_count || "—")}</td>
+      <td class="hide-narrow">${esc(m.program || "—")}</td>
+      <td class="num">${ago(m.last_observation)}</td>
+    </tr>${open.has(m.name) ? `<tr class="details"><td colspan="8"><div class="items">${
+      (details[m.name] || []).map(o => `<div><span class="muted">${esc(o.component)} · ${esc(o.name || o.data_item_id)}</span><span>${esc(o.value)}</span></div>`).join("") || '<span class="muted">Loading…</span>'
+    }</div></td></tr>` : ""}`).join("") || `<tr><td colspan="8" class="muted">No machines yet. Is the edge producer running?</td></tr>`;
+}
+
+function renderEvents(evs) {
+  document.getElementById("events").innerHTML = evs.map(e => e.kind === "gap"
+    ? `<div class="ev"><time>${clock(e.at)}</time><span class="dot gap"></span>Gap · ${esc(gapText(e.gap))}</div>`
+    : `<div class="ev"><time>${clock(e.at)}</time><span class="dot ${e.status}"></span>${esc(e.machine)} → ${e.status}${e.status === "OK" ? "" : " · " + esc(e.reason)}</div>`
+  ).join("") || '<p class="muted">Nothing has happened yet.</p>';
+}
 
 async function refresh() {
   try {
-    const res = await fetch("api/latest");
-    const { stored, observations } = await res.json();
-    const devices = {};
-    for (const o of observations || []) (devices[o.device] ??= []).push(o);
-
-    document.getElementById("devices").innerHTML = Object.entries(devices).map(([name, obs]) => {
-      const newest = obs.reduce((a, o) => o.timestamp > a ? o.timestamp : a, "");
-      const head = HEADLINE.flatMap(type => obs.filter(o => o.type === type && o.category !== "Condition"))
-        .map(o => `<dt>${esc(o.type)}${o.sub_type ? " " + esc(o.sub_type.toLowerCase()) : ""} <small>${esc(o.component)}</small></dt>
-                   <dd class="${esc(o.value)}">${esc(o.value)}</dd>`).join("");
-      const alarms = obs.filter(o => o.category === "Condition" && level(o.value) !== "Normal" && level(o.value) !== "Unavailable");
-      const health = alarms.length
-        ? alarms.map(o => `<dd class="${esc(level(o.value))}">${esc(o.type)}: ${esc(o.value)}</dd>`).join("")
-        : `<dd class="Normal">All conditions normal</dd>`;
-      const rows = obs.map(o => `<tr><td>${esc(o.component)}</td><td>${esc(o.name || o.data_item_id)}</td>
-        <td>${esc(o.type)}</td><td>${esc(o.value)}</td><td class="muted">${ago(o.timestamp)}</td></tr>`).join("");
-      return `<section><h2>${esc(name)}</h2><span class="muted">last update ${newest ? ago(newest) : "never"}</span>
-        <dl>${head}<dt>Health</dt><div>${health}</div></dl>
-        <details><summary>All ${obs.length} data items</summary><table>${rows}</table></details></section>`;
-    }).join("") || `<p class="muted">No observations yet. Is the edge producer running?</p>`;
-    document.getElementById("stats").textContent = `${stored.toLocaleString()} observations stored`;
-  } catch (e) {
-    document.getElementById("stats").textContent = "consumer unreachable";
+    const res = await fetch("api/board");
+    if (!res.ok) throw new Error(res.status);
+    const b = await res.json();
+    await Promise.all([...open].map(async n => { details[n] = await (await fetch(`api/machines/${encodeURIComponent(n)}`)).json(); }));
+    renderPipeline(b.pipeline);
+    renderMachines(b.machines);
+    renderEvents(b.events);
+    document.getElementById("footer").textContent = `${b.stored.toLocaleString()} observations received`;
+    const worst = b.machines[0]?.status ?? "OK";
+    document.title = `${ICON[worst]} ${b.machines.length && worst !== "OK" ? worst + " · " : ""}Machine Status`;
+  } catch {
+    document.getElementById("pipe").innerHTML = `<div class="verdict"><div class="k">Pipeline</div><div class="v Down">Down</div><div class="sub">Consumer unreachable</div></div>`;
+    document.title = "Consumer unreachable · Machine Status";
   }
 }
+
+document.getElementById("machines").addEventListener("click", e => {
+  const row = e.target.closest("tr.machine");
+  if (!row) return;
+  const n = row.dataset.name;
+  open.has(n) ? open.delete(n) : open.add(n);
+  refresh();
+});
 refresh();
 setInterval(refresh, 2000);
 </script>

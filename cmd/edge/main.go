@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
+	"fmt"
 	"io/fs"
 	"log"
 	"net/http"
@@ -28,6 +29,7 @@ func main() {
 	topic := flag.String("topic", "mtconnect.observations", "Kafka topic")
 	interval := flag.Duration("interval", time.Second, "poll interval once caught up")
 	statePath := flag.String("state", "edge-cursor.json", "file that remembers the agent cursor across restarts")
+	gapsTopic := flag.String("gaps-topic", "pipeline.gaps", "Kafka topic for gap events (see docs/adr/0001)")
 	flag.Parse()
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -63,11 +65,18 @@ func main() {
 			sleep(ctx, *interval)
 			continue
 		}
-		if gap {
-			log.Printf("GAP: agent no longer has sequences from %d (restart or buffer overrun); resuming from snapshot at %d", cur.Next, next.Next)
+		records := make([]*kgo.Record, 0, len(obs)+1)
+		if gap != nil {
+			gap.DetectedAt = time.Now().UTC()
+			log.Printf("GAP: %s; sequences from %d not collected (%d missed), resuming from snapshot at %d", gap.Reason, gap.From, gap.Missed, gap.ResumedAt)
+			// sent in the same batch as the observations, so it is confirmed before the cursor moves
+			value, err := json.Marshal(gap)
+			if err != nil {
+				log.Fatal(err)
+			}
+			key := fmt.Sprintf("%d-%d", gap.InstanceID, gap.From)
+			records = append(records, &kgo.Record{Topic: *gapsTopic, Key: []byte(key), Value: value})
 		}
-
-		records := make([]*kgo.Record, 0, len(obs))
 		for _, o := range obs {
 			value, err := json.Marshal(o)
 			if err != nil {

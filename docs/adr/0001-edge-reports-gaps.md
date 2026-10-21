@@ -1,0 +1,3 @@
+# The edge reports gaps on their own topic
+
+The status board needs to show when observations were lost, but only the edge knows that a gap happened and why: it is the one that sees the MTConnect agent restart or discard sequences it never fetched. So the edge publishes a gap event (when, first missing sequence, resumed sequence, count lost, reason) to a separate Kafka topic, `pipeline.gaps`, and the consumer stores it. We rejected having the consumer infer gaps from jumps in sequence numbers, because the snapshot taken after every gap is itself full of normal jumps, so inferred gaps would be wrong in both directions. Gaps get their own topic so `mtconnect.observations` stays one record shape.
