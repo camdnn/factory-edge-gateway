@@ -73,7 +73,7 @@ func (c *Client) Next(ctx context.Context, cur Cursor) (next Cursor, obs []Obser
 	gap = &Gap{InstanceID: cur.InstanceID, From: cur.Next, ResumedAt: next.Next, Reason: GapFellBehind}
 	if next.InstanceID != cur.InstanceID {
 		gap.Reason = GapAgentRestarted
-	} else {
+	} else if next.Next > cur.Next { // the agent is external; never let its numbers wrap around
 		gap.Missed = next.Next - cur.Next
 	}
 	return next, obs, gap, nil

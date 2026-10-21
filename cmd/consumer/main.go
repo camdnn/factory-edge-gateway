@@ -9,7 +9,9 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
+	"fmt"
 	"log"
+	"math"
 	"net/http"
 	"os"
 	"os/signal"
@@ -124,12 +126,16 @@ func main() {
 				if r.Topic == *gapsTopic {
 					var g mtconnect.Gap
 					if err = json.Unmarshal(r.Value, &g); err == nil {
-						gaps = append(gaps, g)
+						if err = storable(g.InstanceID, g.From, g.ResumedAt, g.Missed); err == nil {
+							gaps = append(gaps, g)
+						}
 					}
 				} else {
 					var o mtconnect.Observation
 					if err = json.Unmarshal(r.Value, &o); err == nil {
-						obs = append(obs, o)
+						if err = storable(o.InstanceID, o.Sequence); err == nil {
+							obs = append(obs, o)
+						}
 					}
 				}
 				if err != nil {
@@ -180,6 +186,17 @@ func main() {
 			clear(partitionLag)
 		}
 	}
+}
+
+// storable rejects numbers SQLite cannot hold. They originate at an external MTConnect
+// agent, and one bad record must be skipped, not crash the consumer on every redelivery.
+func storable(nums ...uint64) error {
+	for _, n := range nums {
+		if n > math.MaxInt64 {
+			return fmt.Errorf("number %d too large to store", n)
+		}
+	}
+	return nil
 }
 
 // housekeep records machine status changes (including machines going quiet, which

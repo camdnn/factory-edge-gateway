@@ -71,7 +71,14 @@ func TestClientNext(t *testing.T) {
 	// agent restarted with a new instance whose buffer happens to cover our cursor:
 	// how much the old instance produced after 400 is unknowable
 	agent.instance, agent.first, agent.next = 8, 1, 500
-	step(cur, "/current",
+	cur = step(cur, "/current",
 		&Gap{InstanceID: 7, From: 400, ResumedAt: 500, Missed: 0, Reason: GapAgentRestarted},
 		Cursor{InstanceID: 8, Next: 500})
+
+	// a misbehaving agent's sequences go backwards without a restart: the missed count
+	// must not wrap around to an enormous number
+	agent.first, agent.next = 1, 100
+	step(cur, "/current",
+		&Gap{InstanceID: 8, From: 500, ResumedAt: 100, Missed: 0, Reason: GapFellBehind},
+		Cursor{InstanceID: 8, Next: 100})
 }
