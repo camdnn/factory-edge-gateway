@@ -28,7 +28,7 @@ func main() {
 	topic := flag.String("topic", "mtconnect.observations", "Kafka topic")
 	group := flag.String("group", "laptop", "Kafka consumer group")
 	dbPath := flag.String("db", "observations.db", "SQLite database file")
-	addr := flag.String("addr", ":8090", "status board address")
+	addr := flag.String("addr", "127.0.0.1:8090", "status board address (localhost only by default)")
 	flag.Parse()
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -95,17 +95,19 @@ func serve(addr string, store *Store) {
 	http.HandleFunc("GET /api/latest", func(w http.ResponseWriter, r *http.Request) {
 		latest, err := store.Latest()
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			log.Printf("api: %v", err)
+			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
 		}
 		stored, err := store.Count()
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			log.Printf("api: %v", err)
+			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{"stored": stored, "observations": latest})
 	})
-	log.Printf("status board on http://localhost%s", addr)
+	log.Printf("status board on http://%s", addr)
 	log.Fatal(http.ListenAndServe(addr, nil))
 }
