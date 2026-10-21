@@ -41,8 +41,11 @@ services:
       KAFKA_LOG_SEGMENT_BYTES: 104857600
       # sized for a 4 GB Pi 4; on a 2 GB Pi set KAFKA_HEAP_OPTS="-Xmx512m -Xms512m"
       KAFKA_HEAP_OPTS: ${KAFKA_HEAP_OPTS:--Xmx1g -Xms1g}
+      # must be explicit: with env-var config the image leaves log.dirs unset and Kafka
+      # writes to /tmp/kafka-logs inside the container, which is lost when it is recreated
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
     volumes:
-      - kafka-data:/tmp/kraft-combined-logs # the image's default log dir, writable by its user
+      - kafka-data:/var/lib/kafka/data
 
   edge:
     build:
