@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Machine Status</title>
+<style>
+  :root { --bg: #f6f7f9; --card: #fff; --fg: #1b1f24; --muted: #667085; --line: #e3e6ea;
+          --ok: #1a7f37; --warn: #9a6700; --bad: #cf222e; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #0e1116; --card: #161b22; --fg: #e6edf3; --muted: #8b949e; --line: #30363d;
+            --ok: #3fb950; --warn: #d29922; --bad: #f85149; }
+  }
+  body { margin: 0; padding: 24px 16px; background: var(--bg); color: var(--fg);
+         font: 15px/1.4 system-ui, -apple-system, sans-serif; }
+  header { max-width: 1100px; margin: 0 auto 16px; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
+  h1 { font-size: 20px; margin: 0; }
+  .muted { color: var(--muted); }
+  main { max-width: 1100px; margin: 0 auto; display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
+  section { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 16px; min-width: 0; }
+  h2 { font-size: 17px; margin: 0 0 2px; }
+  dl { display: grid; grid-template-columns: auto 1fr; gap: 6px 16px; margin: 12px 0; }
+  dt { color: var(--muted); }
+  dd { margin: 0; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+  .ACTIVE, .Normal { color: var(--ok); } .READY, .Warning { color: var(--warn); }
+  .STOPPED, .INTERRUPTED, .Fault { color: var(--bad); }
+  details { margin-top: 8px; } summary { cursor: pointer; color: var(--muted); }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 8px; }
+  td { border-top: 1px solid var(--line); padding: 4px 6px 4px 0; vertical-align: top; overflow-wrap: anywhere; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Machine status <span class="muted">· live MTConnect via Kafka</span></h1>
+  <span class="muted" id="stats">connecting…</span>
+</header>
+<main id="devices"></main>
+<script>
+// headline data items shown on each card, in this order
+const HEADLINE = ["Execution", "ControllerMode", "PartCount", "RotaryVelocity", "SpindleSpeed", "Program"];
+
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const ago = t => { const s = Math.max(0, Math.round((Date.now() - new Date(t)) / 1000));
+  return s < 60 ? `${s}s ago` : s < 3600 ? `${Math.round(s / 60)}m ago` : `${Math.round(s / 3600)}h ago`; };
+const level = v => String(v).split(":")[0];
+
+async function refresh() {
+  try {
+    const res = await fetch("api/latest");
+    const { stored, observations } = await res.json();
+    const devices = {};
+    for (const o of observations || []) (devices[o.device] ??= []).push(o);
+
+    document.getElementById("devices").innerHTML = Object.entries(devices).map(([name, obs]) => {
+      const newest = obs.reduce((a, o) => o.timestamp > a ? o.timestamp : a, "");
+      const head = HEADLINE.flatMap(type => obs.filter(o => o.type === type && o.category !== "Condition"))
+        .map(o => `<dt>${esc(o.type)}${o.sub_type ? " " + esc(o.sub_type.toLowerCase()) : ""} <small>${esc(o.component)}</small></dt>
+                   <dd class="${esc(o.value)}">${esc(o.value)}</dd>`).join("");
+      const alarms = obs.filter(o => o.category === "Condition" && level(o.value) !== "Normal" && level(o.value) !== "Unavailable");
+      const health = alarms.length
+        ? alarms.map(o => `<dd class="${esc(level(o.value))}">${esc(o.type)}: ${esc(o.value)}</dd>`).join("")
+        : `<dd class="Normal">All conditions normal</dd>`;
+      const rows = obs.map(o => `<tr><td>${esc(o.component)}</td><td>${esc(o.name || o.data_item_id)}</td>
+        <td>${esc(o.type)}</td><td>${esc(o.value)}</td><td class="muted">${ago(o.timestamp)}</td></tr>`).join("");
+      return `<section><h2>${esc(name)}</h2><span class="muted">last update ${newest ? ago(newest) : "never"}</span>
+        <dl>${head}<dt>Health</dt><div>${health}</div></dl>
+        <details><summary>All ${obs.length} data items</summary><table>${rows}</table></details></section>`;
+    }).join("") || `<p class="muted">No observations yet. Is the edge producer running?</p>`;
+    document.getElementById("stats").textContent = `${stored.toLocaleString()} observations stored`;
+  } catch (e) {
+    document.getElementById("stats").textContent = "consumer unreachable";
+  }
+}
+refresh();
+setInterval(refresh, 2000);
+</script>
+</body>
+</html>
