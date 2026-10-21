@@ -2,13 +2,33 @@ package main
 
 import (
 	"encoding/json"
+	"encoding/xml"
 	"flag"
 	"log"
 	"net/http"
 	"time"
 
+	"github.com/camdnn/factory-edge-gateway/internal/mtconnect"
 	"github.com/camdnn/factory-edge-gateway/internal/sim"
 )
+
+// writeXML is a helper function to print out xml formatted data
+func writeXML(w http.ResponseWriter, v any) {
+	body, err := xml.MarshalIndent(v, "", "  ")
+	if err != nil {
+		log.Printf("encode xml: %v", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/xml; charset=utf-8")
+
+	if _, err = w.Write([]byte(xml.Header)); err != nil {
+		log.Printf("write status: %v", err)
+	}
+	if _, err = w.Write(body); err != nil {
+		log.Printf("write status: %v", err)
+	}
+}
 
 func main() {
 	// flags for addr and seed
@@ -40,8 +60,14 @@ func main() {
 		}
 	})
 
+	// prints xml formatted data to current path
+	http.HandleFunc("GET /current", func(w http.ResponseWriter, r *http.Request) {
+		writeXML(w, mtconnect.FromStatus(cnc.Snapshot(time.Now())))
+	})
+
 	// start a connection with addr
-	log.Printf("simulator listening on http://localhost%s/status (seed %d)", *addr, *seed)
+	log.Printf("simulator (json formatted) listening on http://localhost%s/status (seed %d)", *addr, *seed)
+	log.Printf("simulator (xml formatted) listening on http://localhost%s/status (seed %d)", *addr, *seed)
 	// Pass nil to use default router
 	log.Fatal(http.ListenAndServe(*addr, nil))
 }
