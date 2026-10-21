@@ -3,10 +3,18 @@
 #   PI_TAILNET_NAME=mypi.tailnet-name.ts.net PI_TAILSCALE_IP=$(tailscale ip -4) docker compose up -d
 #
 # With no variables set, Kafka is only reachable on localhost (handy for testing on a laptop).
+x-logging: &logging
+  # cap logs on the SD card: the edge agent logs about once a second
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   kafka:
     image: apache/kafka:4.1.0
     restart: unless-stopped
+    logging: *logging
     ports:
       # bind to the Tailscale interface only, so the home LAN can't reach the broker
       - "${PI_TAILSCALE_IP:-127.0.0.1}:9092:9092"
@@ -41,6 +49,7 @@ services:
       context: ../..
       dockerfile: deploy/pi/Dockerfile
     restart: unless-stopped
+    logging: *logging
     depends_on: [kafka]
     command:
       - -agent=${MTCONNECT_AGENT:-https://demo.mtconnect.org}
