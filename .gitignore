@@ -1,2 +1,3 @@
 *.db*
 edge-cursor.json*
+.claude/settings.local.json

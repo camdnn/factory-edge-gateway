@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Data's Journey</title>
+<link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+<main>
+<header class="kicker">Lesson 1 · factory-edge-gateway</header>
+<h1>The data's journey</h1>
+<p class="lede">Follow one real reading, a lathe spindle turning at 599 RPM, from a machine you've never seen to a page on your laptop. By the end you can draw the whole pipeline from memory.</p>
+
+<h2>Where the data comes from</h2>
+<p>The data starts at real CNC machines: an <b>Okuma</b> lathe and a <b>Mazak</b> mill. They are not in your house. They're attached to a public server run by the MTConnect Institute, <a href="https://demo.mtconnect.org/current">demo.mtconnect.org</a>. Open that link: it's live.</p>
+<p>That server runs an <b>MTConnect agent</b>, software that collects machine readings and serves them over plain HTTP as XML.<a class="cite" href="https://github.com/mtconnect/cppagent">[1]</a> Every reading gets a <b>sequence number</b>, a counter that only goes up. The agent remembers the last 131,072 readings in a ring buffer, so older ones are overwritten.<a class="cite" href="https://github.com/mtconnect/cppagent">[1]</a> On this demo that's roughly 45 minutes of history.</p>
+<p class="aside">You first asked for NIST's test bed. It was offline, and the demo agent speaks the same protocol, so the program takes the agent's address as a setting (<code>-agent</code>).</p>
+
+<h2>The seven hops</h2>
+<ol class="flow">
+  <li><span class="where">Somewhere else</span><b>Machine → MTConnect agent</b>The Okuma reports spindle speed 599. The agent stamps it with sequence number, say, 33,653,231.</li>
+  <li><span class="where">Raspberry Pi · <code>cmd/edge</code></span><b>Agent → edge program</b>Every second the edge program asks the agent: "give me everything after sequence N". It turns each reading into a small JSON record.</li>
+  <li><span class="where">Raspberry Pi · Docker</span><b>Edge → Kafka</b>It writes the record into a Kafka <b>topic</b> called <code>mtconnect.observations</code>. Only after Kafka confirms the write does the edge program advance N and save it to disk.</li>
+  <li><span class="where">Raspberry Pi · Docker</span><b>Kafka holds it</b>Kafka is a durable log. Reading a record doesn't delete it; it stays for 24 hours here.<a class="cite" href="https://kafka.apache.org/intro">[2]</a> This is why your laptop can be off and miss nothing.</li>
+  <li><span class="where">The network</span><b>Kafka → Tailscale → your Mac</b>Tailscale makes a private, encrypted network containing just your Mac and your Pi.<a class="cite" href="https://tailscale.com/blog/how-tailscale-works">[3]</a> The Mac reaches the Pi at <code>raspberrypi.taileb9175.ts.net</code> from any Wi-Fi, with no ports opened on your router.</li>
+  <li><span class="where">Your Mac · <code>cmd/consumer</code></span><b>Consumer → SQLite</b>The consumer reads new records and saves them to <code>observations.db</code>. Only then does it tell Kafka "I've got up to here" (a <b>commit</b>).</li>
+  <li><span class="where">Your Mac · browser</span><b>SQLite → status page</b>The consumer also runs a tiny web server. <code>127.0.0.1:8090</code> shows the latest value of every reading, refreshing every 2 seconds.</li>
+</ol>
+
+<div class="box">
+<h3>Why so many pieces?</h3>
+<p>Each one answers a "what if":</p>
+<table>
+<tr><th>What if…</th><th>What saves you</th></tr>
+<tr><td>the laptop is off for an hour</td><td>Kafka keeps the records until you read them</td></tr>
+<tr><td>the Pi loses internet for 10 minutes</td><td>the agent's buffer still has those sequence numbers</td></tr>
+<tr><td>the laptop changes Wi-Fi</td><td>Tailscale finds the Pi wherever it is</td></tr>
+<tr><td>a program crashes mid-write</td><td>both sides only move forward <i>after</i> the next hop confirms</td></tr>
+</table>
+<p>That last row is the core idea of the whole project. Lessons 3 and 4 dig into it.</p>
+</div>
+
+<h2>Practice: rebuild the path</h2>
+<p>Click the hops in order, from the machine to your screen. Don't scroll up.</p>
+<div class="order" data-steps='["Okuma lathe","MTConnect agent (demo.mtconnect.org)","Edge program on the Pi","Kafka on the Pi","Tailscale network","Consumer on the Mac","SQLite file","Status page in the browser"]'></div>
+
+<h2>Check yourself</h2>
+<div class="quiz">
+  <div class="item" data-answer="1" data-why="The readings come from real Okuma and Mazak machines behind the public MTConnect demo agent.">
+    <p class="q">1. Where does the machine data originate?</p>
+    <button>Sensors wired into the Pi</button>
+    <button>A public MTConnect demo server</button>
+    <button>Kafka generates it on demand</button>
+    <button>The repo's built-in CNC simulator</button>
+  </div>
+  <div class="item" data-answer="3" data-why="cmd/edge runs on the Pi, polls the agent and produces to Kafka.">
+    <p class="q">2. Which program talks to the MTConnect agent?</p>
+    <button>cmd/consumer on the Mac</button>
+    <button>cmd/simulation on the Pi</button>
+    <button>Kafka itself polls machines</button>
+    <button>cmd/edge on the Pi</button>
+  </div>
+  <div class="item" data-answer="0" data-why="Tailscale is only the network. Storing is Kafka's job, converting is the edge's, serving the page is the consumer's.">
+    <p class="q">3. What job does Tailscale do here?</p>
+    <button>Private encrypted network linking Mac, Pi</button>
+    <button>Stores observations until the Mac reads</button>
+    <button>Converts machine XML into JSON records</button>
+    <button>Serves the live status page locally</button>
+  </div>
+  <div class="item" data-answer="2" data-why="Kafka keeps records for 24 hours whether or not anyone has read them; the consumer resumes from its last commit.">
+    <p class="q">4. Your Mac is off for an hour. What happens?</p>
+    <button>It is lost; nothing stores it</button>
+    <button>The Pi emails it to you</button>
+    <button>Kafka keeps it; consumer catches up</button>
+    <button>The agent pauses the real machines</button>
+  </div>
+</div>
+
+<div class="box">
+<h3>Read next</h3>
+<p><a href="https://kafka.apache.org/intro">Apache Kafka: Introduction</a> is the official one-page overview, about 10 minutes. Read it with this pipeline in mind: our "event" is one machine reading, our producer is <code>cmd/edge</code>, our consumer is <code>cmd/consumer</code>.</p>
+<p>Something unclear? Ask me in the terminal. I'm your teacher for this, and "why does X exist?" is always a good question.</p>
+</div>
+
+<nav class="foot">
+  <a href="../reference/system-map.html">System map (every file, every fix) →</a>
+</nav>
+<p class="aside">Sources: [1] <a href="https://github.com/mtconnect/cppagent">MTConnect C++ Agent README</a> · [2] <a href="https://kafka.apache.org/intro">Kafka Introduction</a> · [3] <a href="https://tailscale.com/blog/how-tailscale-works">How Tailscale works</a></p>
+</main>
+<script src="../assets/quiz.js"></script>
+<script src="../assets/order.js"></script>
+</body>
+</html>

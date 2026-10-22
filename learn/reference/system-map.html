@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>System Map</title>
+<link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+<main>
+<header class="kicker">Reference · factory-edge-gateway</header>
+<h1>System map</h1>
+<p class="lede">Every moving part, what it does, and what changed and why. Keep this open while you read the code.</p>
+
+<h2>The pipeline in one line</h2>
+<pre>Okuma/Mazak → MTConnect agent (demo.mtconnect.org) ─HTTPS→ cmd/edge (Pi) → Kafka (Pi)
+             ─Tailscale→ cmd/consumer (Mac) → observations.db (SQLite) → http://127.0.0.1:8090</pre>
+
+<h2>Where each piece runs</h2>
+<table>
+<tr><th>Piece</th><th>Runs on</th><th>Started by</th></tr>
+<tr><td>MTConnect agent</td><td>MTConnect Institute's server</td><td>not yours, it's public</td></tr>
+<tr><td><code>cmd/edge</code> + Kafka</td><td>Raspberry Pi 4, in Docker</td><td><code>docker compose up -d</code> in <code>deploy/pi</code>; restarts on boot</td></tr>
+<tr><td>Tailscale</td><td>Pi and Mac, on the host</td><td>the Tailscale app on the Mac, the system service on the Pi</td></tr>
+<tr><td><code>cmd/consumer</code></td><td>your Mac</td><td><code>go run ./cmd/consumer -brokers raspberrypi.taileb9175.ts.net:9092</code></td></tr>
+</table>
+
+<h2>The code, file by file</h2>
+<h3><code>internal/mtconnect/streams.go</code>: reading the agent's XML</h3>
+<p><code>ParseStreams</code> turns one agent response into a <code>Header</code> (the buffer bookkeeping: <code>firstSequence</code>, <code>nextSequence</code>, <code>instanceId</code>) plus a flat list of <code>Observation</code>s. Each observation holds machine, component, data item, value, sequence and timestamp. It uses Go's <code>encoding/xml</code> with <code>xml:",any"</code> because machines report hundreds of differently named items. It also recognises the agent's error document (<code>OUT_OF_RANGE</code>). Tested against a saved real response in <code>testdata/sample.xml</code>.</p>
+
+<h3><code>internal/mtconnect/client.go</code>: never skipping a reading</h3>
+<p><code>Client.Next(cursor)</code> asks <code>/sample?from=N&amp;count=1000</code> and returns the new readings plus the next cursor. The <b>cursor</b> is <code>{instance_id, next}</code>. On first run it takes a <code>/current</code> snapshot instead. If the agent restarted (new <code>instanceId</code>) or we fell out of its buffer (<code>OUT_OF_RANGE</code>), it re-snapshots and reports <code>gap = true</code>. Data loss is never silent.</p>
+
+<h3><code>cmd/edge/main.go</code>: the Pi program (Kafka <b>producer</b>)</h3>
+<ol>
+<li>Load the cursor from <code>/var/lib/edge/cursor.json</code>.</li>
+<li><code>client.Next</code> → readings. Log <code>GAP</code> if there was one.</li>
+<li>Send one Kafka record per reading, <b>keyed by machine</b> so each machine's readings stay in order in one partition.</li>
+<li><code>ProduceSync</code> waits for Kafka to confirm (acks=all, idempotent producer). <b>Only then</b> save the new cursor, written atomically (temp file + rename).</li>
+<li>If the topic was recreated (<code>UNKNOWN_TOPIC_ID</code>), throw away the Kafka client and make a fresh one.</li>
+</ol>
+
+<h3><code>cmd/consumer/</code>: the Mac program (Kafka <b>consumer</b>)</h3>
+<ul>
+<li><code>main.go</code>: joins consumer group <code>laptop</code>, polls Kafka, saves each batch to SQLite, <b>then</b> commits the offsets. If saving fails it exits without committing, so Kafka redelivers. It reconnects on <code>UNKNOWN_TOPIC_ID</code>, and if Kafka lost data it re-reads from the start. It serves the status page on <code>127.0.0.1:8090</code> (your Mac only).</li>
+<li><code>store.go</code>: table <code>observations</code> with primary key <code>(instance_id, sequence)</code>. A reading delivered twice is ignored (<code>INSERT OR IGNORE</code>), which makes replays harmless. Table <code>latest</code> keeps the newest value per data item so the page is fast.</li>
+<li><code>index.html</code>: the status board, one card per machine, polling <code>/api/latest</code>.</li>
+</ul>
+
+<h3><code>deploy/pi/</code>: running it on the Pi</h3>
+<ul>
+<li><code>Dockerfile</code>: compiles <code>cmd/edge</code> into a tiny static image.</li>
+<li><code>docker-compose.yml</code>: Kafka 4.1 as a single node (no ZooKeeper), plus the edge container.
+  <ul>
+  <li>Two listeners: <code>INTERNAL</code> (edge → Kafka inside Docker) and <code>EXTERNAL</code> (the Mac → Kafka over Tailscale, bound to the Tailscale IP only).</li>
+  <li>Retention: 24 h or about 2 GB.</li>
+  <li>Logs capped at 3 × 10 MB.</li>
+  <li>Data in the <code>kafka-data</code> volume.</li>
+  </ul></li>
+<li><code>.env</code> (on the Pi only, not in git): the Pi's Tailscale name and IP. Kafka hands this address to clients, so it must be right.</li>
+</ul>
+
+<h3>Older parts (you wrote these)</h3>
+<p><code>internal/machine</code> (the <code>Status</code> type and <code>Machine</code> interface) and <code>internal/sim</code> + <code>cmd/simulation</code> (a fake CNC mill). They're not in the live pipeline; they're an offline playground.</p>
+
+<h2>The no-data-loss rules</h2>
+<table>
+<tr><th>Hop</th><th>Rule</th><th>Bookmark</th></tr>
+<tr><td>agent → edge</td><td>advance only after Kafka confirms</td><td>MTConnect sequence number (cursor.json)</td></tr>
+<tr><td>Kafka → consumer</td><td>commit only after SQLite saved</td><td>Kafka offset (stored in Kafka)</td></tr>
+<tr><td>duplicates</td><td>ignored by the database</td><td>primary key <code>(instance_id, sequence)</code></td></tr>
+</table>
+<p>Moving forward only after the next hop confirms means a crash can cause a <i>repeat</i>, never a <i>skip</i>. The database then ignores the repeats. This combination is often called <b>effectively-once</b> delivery.<a class="cite" href="https://www.confluent.io/blog/exactly-once-semantics-are-possible-heres-how-apache-kafka-does-it/">[ref]</a></p>
+
+<h2>What was built, in order</h2>
+<table>
+<tr><th>Commit</th><th>What and why</th></tr>
+<tr><td><code>c951ca3</code></td><td>Saved your MTConnect XML work before starting.</td></tr>
+<tr><td><code>b601045</code></td><td>The pipeline: parser, gap-free client, edge, consumer, Docker deployment, README.</td></tr>
+<tr><td><code>dd8666f</code></td><td>Security review: the status page was visible to everyone on your Wi-Fi; now it's Mac-only.</td></tr>
+<tr><td><code>b22fd41</code></td><td>Log cap: the edge logs once a second, which would slowly fill the SD card.</td></tr>
+<tr><td><code>2898ebe</code></td><td>Kafka storage fix (incident 2).</td></tr>
+<tr><td><code>030a931</code></td><td>Auto-reconnect when the topic is recreated (incident 3).</td></tr>
+</table>
+
+<h2>Incidents: good interview stories</h2>
+<h3>1 · Power loss → GAP</h3>
+<p>The Pi lost power for about 6.7 hours, but the agent only remembers about 45 minutes. On restart the edge saw its cursor was out of the buffer, logged <code>GAP</code>, and resumed from a fresh snapshot. The design worked: the hole was reported, not hidden. Side effects: the Pi's clock was wrong until it synced (it has no battery-backed clock), and one log line was corrupted. Lesson: shut down with <code>sudo shutdown -h now</code>.</p>
+<h3>2 · Kafka forgot everything on container recreate</h3>
+<p>Applying the log cap recreated the Kafka container, and Kafka came back empty. Cause: when configured through environment variables, the image leaves <code>log.dirs</code> unset. Kafka quietly wrote to <code>/tmp/kafka-logs</code> <i>inside</i> the container, not to the mounted volume. A reboot kept the data; a recreate deleted it. Fix: set <code>KAFKA_LOG_DIRS</code> explicitly, then prove it by force-recreating and checking the offsets survived. SQLite already had every record, so nothing reached-the-laptop was lost.</p>
+<h3>3 · Stuck forever on an old topic ID</h3>
+<p>After the wipe, the topic was recreated with a new hidden ID. Both programs kept using the old ID and got <code>UNKNOWN_TOPIC_ID</code> forever. Found by reproducing it locally: wipe Kafka in Docker on the Mac and watch. Fix: on that error, start a fresh Kafka client. Verified with a second local wipe: both recovered alone, and 17,961 sequences were stored with zero gaps.</p>
+
+<nav class="foot">
+  <a href="../lessons/0001-the-datas-journey.html">← Lesson 1: The data's journey</a>
+</nav>
+</main>
+</body>
+</html>
