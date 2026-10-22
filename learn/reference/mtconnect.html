@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MTConnect Cheat Sheet</title>
+<link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+<main>
+<header class="kicker">Reference · factory-edge-gateway</header>
+<h1>MTConnect cheat sheet</h1>
+<p class="lede">Just the parts of MTConnect this pipeline uses.</p>
+
+<h2>Requests</h2>
+<table>
+<tr><th>Request</th><th>Returns</th><th>Edge uses it</th></tr>
+<tr><td><code>/current</code></td><td>latest value of every data item</td><td>first run, after a gap</td></tr>
+<tr><td><code>/sample?from=N&amp;count=C</code></td><td>every observation from N, at most C</td><td>every poll (C = 1000)</td></tr>
+<tr><td><code>/probe</code></td><td>the device and data item list</td><td>not used</td></tr>
+</table>
+
+<h2>Header fields</h2>
+<table>
+<tr><th>Field</th><th>Meaning</th></tr>
+<tr><td><code>instanceId</code></td><td>changes when the agent restarts; numbering starts over</td></tr>
+<tr><td><code>bufferSize</code></td><td>how many observations the ring buffer holds (demo: 131,072 ≈ 45 min)</td></tr>
+<tr><td><code>firstSequence</code></td><td>oldest observation still held</td></tr>
+<tr><td><code>lastSequence</code></td><td>newest observation held</td></tr>
+<tr><td><code>nextSequence</code></td><td>where the next <code>/sample</code> should start</td></tr>
+</table>
+
+<h2>What a poll does (<code>Client.Next</code>)</h2>
+<table>
+<tr><th>Cursor vs header</th><th>Outcome</th><th>Missed</th></tr>
+<tr><td>no cursor yet</td><td><code>/current</code> snapshot, no gap</td><td>n/a</td></tr>
+<tr><td>network error</td><td>keep cursor, retry next second</td><td>0</td></tr>
+<tr><td><code>instanceId</code> differs</td><td>gap: agent restarted, re-snapshot</td><td>unknowable (0)</td></tr>
+<tr><td><code>next &lt; firstSequence</code> or <code>OUT_OF_RANGE</code></td><td>gap: fell behind, re-snapshot</td><td><code>new next − old next</code></td></tr>
+<tr><td>otherwise</td><td>keep all, cursor = <code>nextSequence</code></td><td>0</td></tr>
+</table>
+<p>Gaps go to the <code>pipeline.gaps</code> topic in the same batch as the observations. The cursor <code>{instance_id, next}</code> is saved to <code>edge-cursor.json</code> only after Kafka acks.</p>
+
+<nav class="foot">
+  <a href="../lessons/0002-reading-the-agent.html">Lesson 2</a>
+  <a href="system-map.html">System map</a>
+</nav>
+</main>
+</body>
+</html>

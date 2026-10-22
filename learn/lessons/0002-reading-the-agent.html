@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Reading the Agent</title>
+<link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+<main>
+<header class="kicker">Lesson 2 · factory-edge-gateway</header>
+<h1>Reading the agent without missing a thing</h1>
+<p class="lede">The edge program asks the MTConnect agent for data every second. By the end of this lesson you can look at the agent's header and the edge's saved cursor and say exactly what the edge will do next: carry on, or report a gap.</p>
+
+<h2>Warm-up from lesson 1</h2>
+<p>No scrolling back. Retrieval is the point.</p>
+<div class="quiz">
+  <div class="item" data-answer="2" data-why="cmd/edge runs on the Raspberry Pi. It is the only program that talks to the agent; the Mac never does.">
+    <p class="q">Which program asks the agent for data, and where does it run?</p>
+    <button>cmd/consumer, on your Mac</button>
+    <button>Kafka itself, inside Docker</button>
+    <button>cmd/edge, on the Pi</button>
+    <button>Safari, on your Mac</button>
+  </div>
+</div>
+
+<h2>Every response starts with a header</h2>
+<p>Here is the real header the demo agent sent on 21 October 2026. You can fetch a fresh one at <a href="https://demo.mtconnect.org/current">demo.mtconnect.org/current</a>.</p>
+<pre>&lt;Header instanceId="1791887049"
+        bufferSize="131072"
+        firstSequence="34161250"
+        lastSequence="34292321"
+        nextSequence="34292322" /&gt;</pre>
+<p>Every observation the agent records gets the next <b>sequence number</b>. The agent keeps only the newest <code>bufferSize</code> of them in a ring buffer; when it is full, the oldest is overwritten.<a class="cite" href="https://github.com/mtconnect/cppagent">[1]</a> So the header is the buffer's bookkeeping (<a href="../../internal/mtconnect/streams.go">streams.go</a> parses it):</p>
+<table>
+<tr><th>Field</th><th>Means</th></tr>
+<tr><td><code>firstSequence</code></td><td>oldest observation still in the buffer</td></tr>
+<tr><td><code>lastSequence</code></td><td>newest observation in the buffer</td></tr>
+<tr><td><code>nextSequence</code></td><td>the number the next observation will get, so where to ask from next time</td></tr>
+<tr><td><code>instanceId</code></td><td>changes whenever the agent restarts, which resets its numbering</td></tr>
+</table>
+<p class="aside">Check the arithmetic: 34,292,322 − 34,161,250 = 131,072. The buffer is exactly full.</p>
+
+<svg viewBox="0 0 640 110" role="img" aria-label="Number line: sequences below firstSequence are gone, sequences from firstSequence to lastSequence are in the buffer, nextSequence is the next number to be assigned." style="width:100%;height:auto;font:13px system-ui,sans-serif">
+  <rect x="20" y="40" width="150" height="26" rx="4" style="fill:var(--bad-bg);stroke:var(--bad)"/>
+  <text x="95" y="57" text-anchor="middle" style="fill:var(--bad)">overwritten, gone</text>
+  <rect x="170" y="40" width="380" height="26" rx="4" style="fill:var(--ok-bg);stroke:var(--ok)"/>
+  <text x="360" y="57" text-anchor="middle" style="fill:var(--ok)">in the buffer: 131,072 observations</text>
+  <line x1="170" y1="30" x2="170" y2="76" style="stroke:var(--fg)"/>
+  <text x="170" y="22" text-anchor="middle" style="fill:var(--fg)">firstSequence</text>
+  <line x1="550" y1="30" x2="550" y2="76" style="stroke:var(--fg)"/>
+  <text x="550" y="22" text-anchor="middle" style="fill:var(--fg)">lastSequence</text>
+  <text x="590" y="57" style="fill:var(--muted)">next →</text>
+  <text x="20" y="98" style="fill:var(--muted)">older</text>
+  <text x="620" y="98" text-anchor="end" style="fill:var(--muted)">newer</text>
+</svg>
+
+<h2>Two questions the edge can ask</h2>
+<table>
+<tr><th>Request</th><th>Answer</th><th>Used when</th></tr>
+<tr><td><code>/current</code></td><td>the latest value of every data item, a snapshot</td><td>first run, or after a gap</td></tr>
+<tr><td><code>/sample?from=N&amp;count=1000</code></td><td>every observation from sequence N, up to 1000 of them</td><td>every normal poll</td></tr>
+</table>
+<p>A snapshot only has the <i>latest</i> values, so it can skip changes. <code>/sample</code> returns every one, in order.<a class="cite" href="https://github.com/mtconnect/cppagent">[1]</a> That's why the edge snapshots once, then follows with <code>/sample</code> forever.</p>
+<p>The edge's memory between polls is the <b>cursor</b>: <code>{instance_id, next}</code>, saved to <code>edge-cursor.json</code> on the Pi only after Kafka confirms the write (you saw that rule in lesson 1).</p>
+
+<h2>The three outcomes of a poll</h2>
+<p>This is the heart of <a href="../../internal/mtconnect/client.go">internal/mtconnect/client.go</a>, trimmed:</p>
+<pre>switch {
+case errors.As(err, &amp;ae) &amp;&amp; ae.Code == "OUT_OF_RANGE":
+    // asked for sequences the agent already dropped
+case err != nil:
+    return cur, nil, nil, err          // network trouble: keep cursor, retry
+case h.InstanceID != cur.InstanceID || cur.Next &lt; h.FirstSequence:
+    // agent restarted, or our sequences already left its buffer
+default:
+    return Cursor{h.InstanceID, h.NextSequence}, obs, nil, nil   // normal
+}
+// fall through: take a fresh /current snapshot and report a Gap</pre>
+<ol class="flow">
+  <li><b>No gap</b>Same <code>instanceId</code>, and the cursor is still inside the buffer. Keep every observation, move the cursor to <code>nextSequence</code>.</li>
+  <li><b>Gap: fell behind the buffer</b>Same <code>instanceId</code>, but the cursor is older than <code>firstSequence</code>. The agent answers <code>OUT_OF_RANGE</code>; we fetched <code>from=1</code> on the demo and got exactly that. The number missed is known.</li>
+  <li><b>Gap: the agent restarted</b>The <code>instanceId</code> changed. Old sequence numbers mean nothing in the new numbering, so how many were missed is unknowable (<code>Missed = 0</code>).</li>
+</ol>
+<p>In both gap cases the edge sends a <b>gap</b> record to the <code>pipeline.gaps</code> topic in the same batch as the observations, so a gap is always reported, never silent (see <a href="../../docs/adr/">docs/adr/0001</a>).</p>
+
+<h2>Practice: predict the poll</h2>
+<p>The agent's header is the real one above: <code>instanceId=1791887049</code>, <code>firstSequence=34161250</code>, <code>nextSequence=34292322</code>. For each saved cursor, what does the edge do?</p>
+<div class="quiz">
+  <div class="item" data-answer="0" data-why="Same instance, and 34,290,000 is between firstSequence and nextSequence, so /sample works and the cursor moves on.">
+    <p class="q">1. Cursor <code>{1791887049, 34290000}</code></p>
+    <button>No gap: read on from cursor</button>
+    <button>Gap: fell behind the buffer</button>
+    <button>Gap: agent restarted, reset</button>
+  </div>
+  <div class="item" data-answer="1" data-why="Same instance, but 34,100,000 is older than firstSequence (34,161,250). Those observations were overwritten; the agent says OUT_OF_RANGE.">
+    <p class="q">2. Cursor <code>{1791887049, 34100000}</code></p>
+    <button>No gap: read on from cursor</button>
+    <button>Gap: fell behind the buffer</button>
+    <button>Gap: agent restarted, reset</button>
+  </div>
+  <div class="item" data-answer="2" data-why="The sequence looks in range, but the instanceId is different. That number belongs to the old agent run, so it can't be trusted. The instance check comes first.">
+    <p class="q">3. Cursor <code>{1791880000, 34290000}</code></p>
+    <button>No gap: read on from cursor</button>
+    <button>Gap: fell behind the buffer</button>
+    <button>Gap: agent restarted, reset</button>
+  </div>
+  <div class="item" data-answer="3" data-why="A zero cursor means no edge-cursor.json yet. Client.Next takes a /current snapshot and nothing is reported as a gap, since nothing was ever expected.">
+    <p class="q">4. No cursor file exists yet (first ever run). What does the edge request?</p>
+    <button>/sample from sequence number one</button>
+    <button>/sample from the oldest sequence</button>
+    <button>/probe for the device list</button>
+    <button>/current for a fresh snapshot</button>
+  </div>
+  <div class="item" data-answer="1" data-why="131,072 observations at the demo's rate is about 45 minutes. Offline longer than that and the oldest ones you needed are overwritten.">
+    <p class="q">5. The Pi loses internet. Roughly how long before a gap is guaranteed on this demo?</p>
+    <button>About ten seconds offline</button>
+    <button>About forty-five minutes offline</button>
+    <button>About twenty-four hours offline</button>
+    <button>Never, the agent waits</button>
+  </div>
+</div>
+
+<div class="box">
+<h3>Try it for real (2 minutes)</h3>
+<p>In a terminal, ask the agent for something it no longer has, then for something it does. Use the <code>firstSequence</code> you see in the first command.</p>
+<pre>curl -s https://demo.mtconnect.org/current | grep -o '&lt;Header[^&gt;]*&gt;'
+curl -s 'https://demo.mtconnect.org/sample?from=1&amp;count=1' | grep -o 'OUT_OF_RANGE'
+curl -s 'https://demo.mtconnect.org/sample?from=FIRST&amp;count=3' | grep -o 'sequence="[0-9]*"'</pre>
+<p>You just did by hand what <code>Client.Next</code> does every second.</p>
+</div>
+
+<div class="box">
+<h3>Read next</h3>
+<p>The <a href="https://github.com/mtconnect/cppagent">MTConnect C++ Agent README</a> is the reference implementation the demo runs. Skim the sections on the buffer and on the <code>sample</code> request's <code>from</code> and <code>count</code> parameters, about 10 minutes.</p>
+<p>Something unclear? Ask me in the terminal. A good one to try: "why does the edge check <code>instanceId</code> before the sequence?"</p>
+</div>
+
+<nav class="foot">
+  <a href="0001-the-datas-journey.html">← Lesson 1</a>
+  <a href="../reference/mtconnect.html">MTConnect cheat sheet</a>
+  <a href="../reference/system-map.html">System map</a>
+</nav>
+<p class="aside">Sources: [1] <a href="https://github.com/mtconnect/cppagent">MTConnect C++ Agent README</a>. Header and OUT_OF_RANGE response observed live from demo.mtconnect.org on 2026-10-21.</p>
+</main>
+<script src="../assets/quiz.js"></script>
+</body>
+</html>

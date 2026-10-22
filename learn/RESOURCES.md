@@ -27,3 +27,10 @@
 ## Gaps
 - No good free tutorial for MTConnect sequence numbers and `/sample?from=`. Lessons rely on the spec PDFs plus what we observed from the live agent.
 - The NIST Smart Manufacturing Systems test bed (smstestbed.nist.gov) was offline when checked on 2026-10-20.
+
+## Go standard library (added for lesson 0003)
+
+- [Go encoding/xml: Unmarshal](https://pkg.go.dev/encoding/xml#Unmarshal)
+  The official rules for struct tags: `,attr`, `,chardata`, `,any`, `a>b` paths and `XMLName`. Use for: how `streams.go` reads the agent's XML. Primary source for lesson 0003.
+- [Go encoding/json: Marshal](https://pkg.go.dev/encoding/json#Marshal)
+  How `json:"name,omitempty"` tags shape the JSON written to Kafka. Use for: the record format on the topic.
