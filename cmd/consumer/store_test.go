@@ -172,7 +172,7 @@ func TestStoreReadsTheLatestStatusChangePerMachine(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := map[string]StatusChange{"Mazak": {StatusOK, time.Date(2026, 10, 21, 6, 5, 0, 0, time.UTC)}} // Okuma never changed
+	want := map[string]StatusChange{"Mazak": {Status: StatusOK, At: time.Date(2026, 10, 21, 6, 5, 0, 0, time.UTC)}} // Okuma never changed
 	if len(got) != len(want) || got["Mazak"].Status != want["Mazak"].Status || !got["Mazak"].At.Equal(want["Mazak"].At) {
 		t.Errorf("LastStatusChanges = %v, want %v", got, want)
 	}

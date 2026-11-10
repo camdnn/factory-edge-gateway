@@ -153,15 +153,22 @@ func TestMachineStatusEmergencyStopIsAnAlarm(t *testing.T) {
 
 func TestMachineStatusOKSinceIsTheLastRecordedStatusChange(t *testing.T) {
 	lastChange := map[string]StatusChange{
-		"Recovered": {StatusOK, now.Add(-time.Minute)},           // came back from an Alarm a minute ago
-		"Faulted":   {StatusWarning, now.Add(-20 * time.Minute)}, // the fault says when its alarm began
-		"Clearing":  {StatusAlarm, now.Add(-3 * time.Hour)},      // just cleared; the change to OK isn't recorded yet
+		"Recovered": {Status: StatusOK, At: now.Add(-time.Minute)},      // came back from an Alarm a minute ago
+		"Clearing":  {Status: StatusAlarm, At: now.Add(-3 * time.Hour)}, // just cleared; the change to OK isn't recorded yet
+		// a recorded change never replaces the since of a condition or silence
+		"Faulted":   {Status: StatusWarning, At: now.Add(-20 * time.Minute)},
+		"Warned":    {Status: StatusOK, At: now.Add(-time.Minute)},
+		"Silent":    {Status: StatusOK, At: now.Add(-2 * time.Hour)},
+		"Unplugged": {Status: StatusOK, At: now.Add(-2 * time.Hour)},
 	}
 	got := machineStatuses([]mtconnect.Observation{
 		obs("Recovered", "Condition", "SYSTEM", "Normal", time.Second),
 		obs("Steady", "Condition", "SYSTEM", "Normal", time.Second),
 		obs("Faulted", "Condition", "SYSTEM", "Fault: Overload", 3*time.Minute),
 		obs("Clearing", "Condition", "SYSTEM", "Normal", time.Second),
+		obs("Warned", "Condition", "SYSTEM", "Warning: DESIGNATED DATA NOT FOUND", 4*time.Minute),
+		obs("Silent", "Event", "Execution", "ACTIVE", 6*time.Minute),
+		obs("Unplugged", "Event", "Availability", "UNAVAILABLE", 30*time.Second),
 	}, lastChange, now)
 
 	want := map[string]struct {
@@ -172,6 +179,9 @@ func TestMachineStatusOKSinceIsTheLastRecordedStatusChange(t *testing.T) {
 		"Recovered": {StatusOK, time.Date(2026, 10, 21, 11, 59, 0, 0, time.UTC)},
 		"Steady":    {StatusOK, time.Time{}}, // no recorded change: the board claims no history it lacks
 		"Clearing":  {StatusOK, time.Time{}}, // the 3h Alarm's start is not how long it has been OK
+		"Warned":    {StatusWarning, time.Date(2026, 10, 21, 11, 56, 0, 0, time.UTC)},
+		"Silent":    {StatusOffline, time.Date(2026, 10, 21, 11, 54, 0, 0, time.UTC)},
+		"Unplugged": {StatusOffline, time.Date(2026, 10, 21, 11, 59, 30, 0, time.UTC)},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("got %d machines %+v, want %d", len(got), got, len(want))

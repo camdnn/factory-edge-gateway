@@ -209,8 +209,8 @@ type StatusChange struct {
 	At     time.Time
 }
 
-// LastStatusChanges is each machine's most recently recorded status change, in
-// the same order RecordStatuses reads it. A machine with no recorded change is absent.
+// LastStatusChanges is each machine's newest recorded status change, picked by
+// rowid as RecordStatuses picks it. A machine with no recorded change is absent.
 func (s *Store) LastStatusChanges() (map[string]StatusChange, error) {
 	rows, err := s.db.Query(`SELECT machine, status, at FROM status_changes
 		WHERE rowid IN (SELECT MAX(rowid) FROM status_changes GROUP BY machine)`)
@@ -225,7 +225,7 @@ func (s *Store) LastStatusChanges() (map[string]StatusChange, error) {
 			return nil, err
 		}
 		at, _ := time.Parse(tsFormat, ts)
-		out[machine] = StatusChange{Status(status), at}
+		out[machine] = StatusChange{Status: Status(status), At: at}
 	}
 	return out, rows.Err()
 }
