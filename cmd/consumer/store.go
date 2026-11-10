@@ -120,7 +120,9 @@ func (s *Store) Latest() ([]mtconnect.Observation, error) {
 			&o.Category, &o.Type, &o.SubType, &o.Value, &ts); err != nil {
 			return nil, err
 		}
-		o.Timestamp, _ = time.Parse(tsFormat, ts)
+		if o.Timestamp, err = time.Parse(tsFormat, ts); err != nil {
+			return nil, fmt.Errorf("latest %s/%s: %w", o.Device, o.DataItemID, err)
+		}
 		out = append(out, o)
 	}
 	return out, rows.Err()
@@ -213,7 +215,9 @@ func (s *Store) gaps(limit int) ([]mtconnect.Gap, error) {
 			return nil, err
 		}
 		g.Reason = mtconnect.GapReason(reason)
-		g.DetectedAt, _ = time.Parse(tsFormat, ts)
+		if g.DetectedAt, err = time.Parse(tsFormat, ts); err != nil {
+			return nil, fmt.Errorf("gap in instance %d: %w", g.InstanceID, err)
+		}
 		out = append(out, g)
 	}
 	return out, rows.Err()
@@ -260,7 +264,10 @@ func (s *Store) LastStatusChanges() (map[string]StatusChange, error) {
 		if err := rows.Scan(&machine, &status, &ts); err != nil {
 			return nil, err
 		}
-		at, _ := time.Parse(tsFormat, ts)
+		at, err := time.Parse(tsFormat, ts)
+		if err != nil {
+			return nil, fmt.Errorf("status change for %s: %w", machine, err)
+		}
 		out[machine] = StatusChange{Status: Status(status), At: at}
 	}
 	return out, rows.Err()
@@ -299,7 +306,9 @@ func (s *Store) RecentEvents(limit int) ([]Event, error) {
 			return nil, err
 		}
 		e.Kind, e.Status = "status", Status(status)
-		e.At, _ = time.Parse(tsFormat, ts)
+		if e.At, err = time.Parse(tsFormat, ts); err != nil {
+			return nil, fmt.Errorf("status change for %s: %w", e.Machine, err)
+		}
 		events = append(events, e)
 	}
 	if err := rows.Err(); err != nil {
