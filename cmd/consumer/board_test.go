@@ -24,7 +24,7 @@ func TestMachineStatusWorstConditionWinsAndAlarmsSortFirst(t *testing.T) {
 		obs("Haas", "Condition", "SYSTEM", "Warning: DESIGNATED DATA NOT FOUND", 4*time.Hour),
 	}
 
-	got := machineStatuses(latest, now)
+	got := machineStatuses(latest, nil, now)
 
 	want := []struct {
 		name   string
@@ -58,7 +58,7 @@ func TestMachineStatusOfflineWhenUnavailableOrSilentForFiveMinutes(t *testing.T)
 			o.Component = "BarFeeder"
 			return o
 		}(),
-	}, now)
+	}, nil, now)
 
 	want := map[string]Status{"Faulted": StatusAlarm, "Silent": StatusOffline, "Unplugged": StatusOffline, "Recent": StatusOK, "Busy": StatusOK}
 	for _, m := range got {
@@ -86,7 +86,7 @@ func TestMachineCardShowsActualSpindleActiveProgramAndNewestObservation(t *testi
 		item("path", "Program", "MAIN", "O1000", time.Hour),
 		item("path", "Program", "ACTIVE", "IMTS-2022-1E-MM.MIN", time.Hour),
 		item("Controller", "Load", "", "4", time.Second),
-	}, now)[0]
+	}, nil, now)[0]
 
 	if got.RunState != "PROGRAM_COMPLETED" || got.Spindle != "271" || got.PartCount != "12" ||
 		got.Program != "IMTS-2022-1E-MM.MIN" || !got.LastObservation.Equal(now.Add(-time.Second)) {
@@ -145,8 +145,40 @@ func TestMachineStatusEmergencyStopIsAnAlarm(t *testing.T) {
 	got := machineStatuses([]mtconnect.Observation{
 		obs("Mazak", "Condition", "SYSTEM", "Normal", time.Second),
 		obs("Mazak", "Event", "EmergencyStop", "TRIGGERED", 10*time.Second),
-	}, now)
+	}, nil, now)
 	if got[0].Status != StatusAlarm || got[0].Reason != "Emergency stop" || !got[0].Since.Equal(now.Add(-10*time.Second)) {
 		t.Errorf("got %+v, want Alarm \"Emergency stop\" since 10s ago", got[0])
+	}
+}
+
+func TestMachineStatusOKSinceIsTheLastRecordedStatusChange(t *testing.T) {
+	lastChange := map[string]StatusChange{
+		"Recovered": {StatusOK, now.Add(-time.Minute)},           // came back from an Alarm a minute ago
+		"Faulted":   {StatusWarning, now.Add(-20 * time.Minute)}, // the fault says when its alarm began
+		"Clearing":  {StatusAlarm, now.Add(-3 * time.Hour)},      // just cleared; the change to OK isn't recorded yet
+	}
+	got := machineStatuses([]mtconnect.Observation{
+		obs("Recovered", "Condition", "SYSTEM", "Normal", time.Second),
+		obs("Steady", "Condition", "SYSTEM", "Normal", time.Second),
+		obs("Faulted", "Condition", "SYSTEM", "Fault: Overload", 3*time.Minute),
+		obs("Clearing", "Condition", "SYSTEM", "Normal", time.Second),
+	}, lastChange, now)
+
+	want := map[string]struct {
+		status Status
+		since  time.Time
+	}{
+		"Faulted":   {StatusAlarm, time.Date(2026, 10, 21, 11, 57, 0, 0, time.UTC)},
+		"Recovered": {StatusOK, time.Date(2026, 10, 21, 11, 59, 0, 0, time.UTC)},
+		"Steady":    {StatusOK, time.Time{}}, // no recorded change: the board claims no history it lacks
+		"Clearing":  {StatusOK, time.Time{}}, // the 3h Alarm's start is not how long it has been OK
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %d machines %+v, want %d", len(got), got, len(want))
+	}
+	for _, m := range got {
+		if w := want[m.Name]; m.Status != w.status || !m.Since.Equal(w.since) {
+			t.Errorf("%s = %s since %v, want %s since %v", m.Name, m.Status, m.Since, w.status, w.since)
+		}
 	}
 }

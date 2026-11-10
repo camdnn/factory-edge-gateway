@@ -33,7 +33,7 @@ type Machine struct {
 	Name            string    `json:"name"`
 	Status          Status    `json:"status"`
 	Reason          string    `json:"reason"`
-	Since           time.Time `json:"since,omitzero"` // when the condition behind the status began
+	Since           time.Time `json:"since,omitzero"` // when the condition behind the status began; for OK, when it was recorded becoming OK
 	RunState        string    `json:"run_state"`
 	Spindle         string    `json:"spindle"`
 	PartCount       string    `json:"part_count"`
@@ -42,8 +42,10 @@ type Machine struct {
 }
 
 // machineStatuses turns the latest observation of every data item into one
-// status per machine, most severe first.
-func machineStatuses(latest []mtconnect.Observation, now time.Time) []Machine {
+// status per machine, most severe first. lastChange is each machine's most
+// recently recorded status change; when that was a change to OK, it is an OK
+// machine's "since".
+func machineStatuses(latest []mtconnect.Observation, lastChange map[string]StatusChange, now time.Time) []Machine {
 	byMachine := map[string][]mtconnect.Observation{}
 	for _, o := range latest {
 		if o.Device != agentDevice {
@@ -54,6 +56,10 @@ func machineStatuses(latest []mtconnect.Observation, now time.Time) []Machine {
 	machines := make([]Machine, 0, len(byMachine))
 	for name, items := range byMachine {
 		m := Machine{Name: name, Status: StatusOK, Reason: "All conditions normal"}
+		if c := lastChange[name]; c.Status == StatusOK {
+			// a change to anything else is not how long it has been OK (the change to OK isn't recorded yet)
+			m.Since = c.At
+		}
 		var fault, warning, unavailable *mtconnect.Observation
 		var spindleComponent string
 		for i, o := range items {

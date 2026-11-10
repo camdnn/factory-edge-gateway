@@ -41,7 +41,8 @@ func housekeep(ctx context.Context, store *Store, state *pipelineState, pinger *
 			state.kafkaErr.Store("")
 			latest, err := store.Latest()
 			if err == nil {
-				err = store.RecordStatuses(machineStatuses(latest, now), now)
+				// only the statuses are recorded, so no "since" history is needed
+				err = store.RecordStatuses(machineStatuses(latest, nil, now), now)
 			}
 			if err != nil {
 				log.Printf("record statuses: %v", err)

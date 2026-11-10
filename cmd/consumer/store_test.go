@@ -146,3 +146,34 @@ func TestStoreReplayIsHarmless(t *testing.T) {
 		t.Errorf("latest = %+v, want one ACTIVE row", latest)
 	}
 }
+
+func TestStoreReadsTheLatestStatusChangePerMachine(t *testing.T) {
+	s := openTestStore(t)
+	t0 := time.Date(2026, 10, 21, 6, 0, 0, 0, time.UTC)
+
+	if got, err := s.LastStatusChanges(); err != nil || len(got) != 0 {
+		t.Fatalf("LastStatusChanges on empty store = %v, %v; want none", got, err)
+	}
+	steps := []struct {
+		at       time.Time
+		machines []Machine
+	}{
+		{t0, []Machine{{Name: "Okuma", Status: StatusOK}, {Name: "Mazak", Status: StatusAlarm, Reason: "Program error"}}},
+		{t0.Add(5 * time.Minute), []Machine{{Name: "Okuma", Status: StatusOK}, {Name: "Mazak", Status: StatusOK}}},
+		{t0.Add(9 * time.Minute), []Machine{{Name: "Okuma", Status: StatusOK}, {Name: "Mazak", Status: StatusOK}}}, // no change, nothing recorded
+	}
+	for _, st := range steps {
+		if err := s.RecordStatuses(st.machines, st.at); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got, err := s.LastStatusChanges()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]StatusChange{"Mazak": {StatusOK, time.Date(2026, 10, 21, 6, 5, 0, 0, time.UTC)}} // Okuma never changed
+	if len(got) != len(want) || got["Mazak"].Status != want["Mazak"].Status || !got["Mazak"].At.Equal(want["Mazak"].At) {
+		t.Errorf("LastStatusChanges = %v, want %v", got, want)
+	}
+}

@@ -203,6 +203,33 @@ func (s *Store) RecordStatuses(machines []Machine, at time.Time) error {
 	return nil
 }
 
+// StatusChange is a machine's status changing, as recorded.
+type StatusChange struct {
+	Status Status
+	At     time.Time
+}
+
+// LastStatusChanges is each machine's most recently recorded status change, in
+// the same order RecordStatuses reads it. A machine with no recorded change is absent.
+func (s *Store) LastStatusChanges() (map[string]StatusChange, error) {
+	rows, err := s.db.Query(`SELECT machine, status, at FROM status_changes
+		WHERE rowid IN (SELECT MAX(rowid) FROM status_changes GROUP BY machine)`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]StatusChange{}
+	for rows.Next() {
+		var machine, status, ts string
+		if err := rows.Scan(&machine, &status, &ts); err != nil {
+			return nil, err
+		}
+		at, _ := time.Parse(tsFormat, ts)
+		out[machine] = StatusChange{Status(status), at}
+	}
+	return out, rows.Err()
+}
+
 // Event is one line of the recent-events list: a machine status change or a gap.
 type Event struct {
 	At      time.Time      `json:"at"`
