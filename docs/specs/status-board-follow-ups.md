@@ -51,7 +51,7 @@ The status board shipped in `392a12e` answers its two questions, "is a machine a
 
 ## Testing Decisions
 
-- Good tests check behaviour through a module's public interface with literal expected values (worked examples), never internal state or the database directly. The existing tests are the model: machine status tests build observations and assert the resulting rows; store tests write then read through the store's own methods.
+- Tests follow `CODING_STANDARDS.md`.
 - **Seams (all already exist, plus one added during #4):**
   - Machine status function: OK since from a last-change time; no since without history; Offline from receive time, not agent time (a machine with an agent clock 3h behind and a recent receive stays OK; a machine silent for 6 minutes by receive time goes Offline).
   - Store: the latest change time per machine; received-at is recorded when observations are stored.

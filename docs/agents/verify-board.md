@@ -15,7 +15,7 @@ docker compose -f deploy/pi/docker-compose.yml up -d --build   # Kafka + edge, r
 Run `scripts/board-diff.sh [base-ref]`. Its header says what it compares and what its exit codes mean.
 
 - **Refactor**: expect `boards match`.
-- **Intended board change**: expect a diff that shows exactly that change and nothing else. For example, giving OK machines a since flips `has_since` and adds `machines.[].since` to `shape`.
+- **Intended board change**: expect a diff that shows exactly that change and nothing else. For example, adding a field to machine rows adds `machines.[].<field>` to `shape` and nothing else.
 
 ## Edge cursor recovery
 

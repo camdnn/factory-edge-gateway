@@ -28,6 +28,10 @@ _Avoid_: Status (that is the health verdict), execution
 The single health verdict for a machine, the worst that applies: Alarm (a Fault condition or emergency stop triggered), Warning (a Warning condition), Offline (the machine reports unavailable or has sent nothing new for 5 minutes), otherwise OK.
 _Avoid_: Health, state
 
+**Status change**:
+A machine's Machine status changing, as recorded by the consumer and kept forever. Housekeeping records changes every 2 seconds and not at all while the pipeline is silent, so the newest recorded change can lag the board: a machine that just cleared an Alarm shows OK while its newest change is still the change to Alarm. A machine with no recorded change has never been recorded as anything but OK.
+_Avoid_: Status history entry, transition
+
 ## The pipeline
 
 **Pipeline**:
