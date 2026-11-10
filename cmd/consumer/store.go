@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"errors"
+	"fmt"
 	"slices"
 	"time"
 
@@ -139,7 +140,12 @@ func (s *Store) ReceivedAt() (map[string]time.Time, error) {
 		if err := rows.Scan(&machine, &ts); err != nil {
 			return nil, err
 		}
-		out[machine], _ = time.Parse(tsFormat, ts)
+		at, err := time.Parse(tsFormat, ts)
+		if err != nil {
+			// a zero time would read as "no received-at yet" and hide the machine going Offline
+			return nil, fmt.Errorf("received-at for %s: %w", machine, err)
+		}
+		out[machine] = at
 	}
 	return out, rows.Err()
 }

@@ -196,7 +196,7 @@ func TestMachineStatusOKSinceIsTheLastRecordedStatusChange(t *testing.T) {
 	}
 }
 
-func TestMachineStatusOfflineByReceiveTimeNotAgentClock(t *testing.T) {
+func TestMachineStatusOfflineByReceivedAt(t *testing.T) {
 	receivedAt := map[string]time.Time{
 		"SlowClock": now.Add(-10 * time.Second), // agent clock 3h behind, but observations keep arriving
 		"FastClock": now.Add(-6 * time.Minute),  // agent clock says just now, but nothing has arrived for 6 minutes
