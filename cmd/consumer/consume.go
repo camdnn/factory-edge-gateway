@@ -90,7 +90,7 @@ func consume(ctx context.Context, newClient func() *kgo.Client, topic, gapsTopic
 			}
 		})
 
-		inserted, err := store.Insert(obs)
+		inserted, err := store.Insert(obs, time.Now())
 		for _, g := range gaps {
 			if err == nil {
 				err = store.InsertGap(g)

@@ -25,7 +25,7 @@ What a machine is doing right now, such as ACTIVE, READY, STOPPED or PROGRAM_COM
 _Avoid_: Status (that is the health verdict), execution
 
 **Machine status**:
-The single health verdict for a machine, the worst that applies: Alarm (a Fault condition or emergency stop triggered), Warning (a Warning condition), Offline (the machine reports unavailable or has sent nothing new for 5 minutes), otherwise OK.
+The single health verdict for a machine, the worst that applies: Alarm (a Fault condition or emergency stop triggered), Warning (a Warning condition), Offline (the machine reports unavailable, or the laptop has received nothing new from it for 5 minutes by the laptop's own clock), otherwise OK.
 _Avoid_: Health, state
 
 **Status change**:
@@ -51,6 +51,10 @@ _Avoid_: Delay, backlog, latency
 
 **Last received**:
 How long ago the consumer stored anything, measured by the laptop's own clock.
+
+**Received-at**:
+When the consumer last stored a new observation from a machine, measured by the laptop's own clock. It decides whether a machine is Offline; a machine stored before received-at was recorded has none until its next observation.
+_Avoid_: Last seen
 
 **Last observation**:
 How long ago a machine's newest observation was made, measured by that machine's agent clock.

@@ -22,7 +22,7 @@ const (
 
 var statusRank = map[Status]int{StatusAlarm: 0, StatusWarning: 1, StatusOffline: 2, StatusOK: 3}
 
-// offlineAfter is how long a machine may send nothing new before it counts as Offline.
+// offlineAfter is how long the laptop may receive nothing new from a machine before it counts as Offline.
 const offlineAfter = 5 * time.Minute
 
 // agentDevice is the name the MTConnect agent reports itself under; it is not a machine.
@@ -44,8 +44,9 @@ type Machine struct {
 // machineStatuses turns the latest observation of every data item into one
 // status per machine, most severe first. lastChange is each machine's most
 // recently recorded status change; when that was a change to OK, it is an OK
-// machine's "since".
-func machineStatuses(latest []mtconnect.Observation, lastChange map[string]StatusChange, now time.Time) []Machine {
+// machine's "since". receivedAt is when each machine's newest observation was
+// stored, by the laptop's clock: silence is judged by it, never by the agent's clock.
+func machineStatuses(latest []mtconnect.Observation, lastChange map[string]StatusChange, receivedAt map[string]time.Time, now time.Time) []Machine {
 	byMachine := map[string][]mtconnect.Observation{}
 	for _, o := range latest {
 		if o.Device != agentDevice {
@@ -103,8 +104,9 @@ func machineStatuses(latest []mtconnect.Observation, lastChange map[string]Statu
 			m.Status, m.Reason, m.Since = StatusWarning, message(*warning), warning.Timestamp
 		case unavailable != nil:
 			m.Status, m.Reason, m.Since = StatusOffline, "Machine reports unavailable", unavailable.Timestamp
-		case now.Sub(m.LastObservation) > offlineAfter:
-			m.Status, m.Reason, m.Since = StatusOffline, "No new observations", m.LastObservation
+		// no received-at yet (stored before it was recorded): wait for the next observation
+		case !receivedAt[name].IsZero() && now.Sub(receivedAt[name]) > offlineAfter:
+			m.Status, m.Reason, m.Since = StatusOffline, "No new observations", receivedAt[name]
 		}
 		machines = append(machines, m)
 	}

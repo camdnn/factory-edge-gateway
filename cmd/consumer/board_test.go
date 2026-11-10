@@ -24,7 +24,7 @@ func TestMachineStatusWorstConditionWinsAndAlarmsSortFirst(t *testing.T) {
 		obs("Haas", "Condition", "SYSTEM", "Warning: DESIGNATED DATA NOT FOUND", 4*time.Hour),
 	}
 
-	got := machineStatuses(latest, nil, now)
+	got := machineStatuses(latest, nil, nil, now)
 
 	want := []struct {
 		name   string
@@ -58,7 +58,10 @@ func TestMachineStatusOfflineWhenUnavailableOrSilentForFiveMinutes(t *testing.T)
 			o.Component = "BarFeeder"
 			return o
 		}(),
-	}, nil, now)
+	}, nil, map[string]time.Time{
+		"Silent": now.Add(-6 * time.Minute), "Unplugged": now.Add(-30 * time.Second), "Recent": now.Add(-4 * time.Minute),
+		"Faulted": now.Add(-10 * time.Minute), "Busy": now.Add(-time.Second),
+	}, now)
 
 	want := map[string]Status{"Faulted": StatusAlarm, "Silent": StatusOffline, "Unplugged": StatusOffline, "Recent": StatusOK, "Busy": StatusOK}
 	for _, m := range got {
@@ -67,7 +70,7 @@ func TestMachineStatusOfflineWhenUnavailableOrSilentForFiveMinutes(t *testing.T)
 		}
 	}
 	if s := got[1]; s.Name != "Silent" || s.Reason != "No new observations" || !s.Since.Equal(now.Add(-6*time.Minute)) {
-		t.Errorf("silent machine = %+v, want \"No new observations\" since its last observation", s)
+		t.Errorf("silent machine = %+v, want \"No new observations\" since it was last received", s)
 	}
 }
 
@@ -86,7 +89,7 @@ func TestMachineCardShowsActualSpindleActiveProgramAndNewestObservation(t *testi
 		item("path", "Program", "MAIN", "O1000", time.Hour),
 		item("path", "Program", "ACTIVE", "IMTS-2022-1E-MM.MIN", time.Hour),
 		item("Controller", "Load", "", "4", time.Second),
-	}, nil, now)[0]
+	}, nil, nil, now)[0]
 
 	if got.RunState != "PROGRAM_COMPLETED" || got.Spindle != "271" || got.PartCount != "12" ||
 		got.Program != "IMTS-2022-1E-MM.MIN" || !got.LastObservation.Equal(now.Add(-time.Second)) {
@@ -145,7 +148,7 @@ func TestMachineStatusEmergencyStopIsAnAlarm(t *testing.T) {
 	got := machineStatuses([]mtconnect.Observation{
 		obs("Mazak", "Condition", "SYSTEM", "Normal", time.Second),
 		obs("Mazak", "Event", "EmergencyStop", "TRIGGERED", 10*time.Second),
-	}, nil, now)
+	}, nil, nil, now)
 	if got[0].Status != StatusAlarm || got[0].Reason != "Emergency stop" || !got[0].Since.Equal(now.Add(-10*time.Second)) {
 		t.Errorf("got %+v, want Alarm \"Emergency stop\" since 10s ago", got[0])
 	}
@@ -169,7 +172,7 @@ func TestMachineStatusOKSinceIsTheLastRecordedStatusChange(t *testing.T) {
 		obs("Warned", "Condition", "SYSTEM", "Warning: DESIGNATED DATA NOT FOUND", 4*time.Minute),
 		obs("Silent", "Event", "Execution", "ACTIVE", 6*time.Minute),
 		obs("Unplugged", "Event", "Availability", "UNAVAILABLE", 30*time.Second),
-	}, lastChange, now)
+	}, lastChange, map[string]time.Time{"Silent": now.Add(-6 * time.Minute)}, now)
 
 	want := map[string]struct {
 		status Status
@@ -190,5 +193,41 @@ func TestMachineStatusOKSinceIsTheLastRecordedStatusChange(t *testing.T) {
 		if w := want[m.Name]; m.Status != w.status || !m.Since.Equal(w.since) {
 			t.Errorf("%s = %s since %v, want %s since %v", m.Name, m.Status, m.Since, w.status, w.since)
 		}
+	}
+}
+
+func TestMachineStatusOfflineByReceiveTimeNotAgentClock(t *testing.T) {
+	receivedAt := map[string]time.Time{
+		"SlowClock": now.Add(-10 * time.Second), // agent clock 3h behind, but observations keep arriving
+		"FastClock": now.Add(-6 * time.Minute),  // agent clock says just now, but nothing has arrived for 6 minutes
+		// "Upgraded" has no received-at yet: judged by its next observation, not assumed Offline
+	}
+	got := machineStatuses([]mtconnect.Observation{
+		obs("SlowClock", "Event", "Execution", "ACTIVE", 3*time.Hour),
+		obs("FastClock", "Event", "Execution", "ACTIVE", -time.Hour),
+		obs("Upgraded", "Event", "Execution", "ACTIVE", time.Hour),
+	}, nil, receivedAt, now)
+
+	want := map[string]struct {
+		status          Status
+		since           time.Time
+		lastObservation time.Time
+	}{
+		"FastClock": {StatusOffline, time.Date(2026, 10, 21, 11, 54, 0, 0, time.UTC), time.Date(2026, 10, 21, 13, 0, 0, 0, time.UTC)},
+		"SlowClock": {StatusOK, time.Time{}, time.Date(2026, 10, 21, 9, 0, 0, 0, time.UTC)}, // the wrong clock still shows in Last observation
+		"Upgraded":  {StatusOK, time.Time{}, time.Date(2026, 10, 21, 11, 0, 0, 0, time.UTC)},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %d machines %+v, want %d", len(got), got, len(want))
+	}
+	for _, m := range got {
+		w := want[m.Name]
+		if m.Status != w.status || !m.Since.Equal(w.since) || !m.LastObservation.Equal(w.lastObservation) {
+			t.Errorf("%s = %s since %v, last observation %v; want %s since %v, last observation %v",
+				m.Name, m.Status, m.Since, m.LastObservation, w.status, w.since, w.lastObservation)
+		}
+	}
+	if got[0].Name != "FastClock" || got[0].Reason != "No new observations" {
+		t.Errorf("first machine = %+v, want FastClock Offline with \"No new observations\"", got[0])
 	}
 }

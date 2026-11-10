@@ -37,6 +37,10 @@ CREATE TABLE IF NOT EXISTS gaps (
 CREATE TABLE IF NOT EXISTS status_changes (
 	machine TEXT NOT NULL, status TEXT NOT NULL, reason TEXT, at TEXT NOT NULL
 );
+-- its own table, not a column of latest: latest skips rows whose agent timestamp went backwards
+CREATE TABLE IF NOT EXISTS received (
+	machine TEXT PRIMARY KEY, at TEXT NOT NULL -- laptop clock
+);
 CREATE INDEX IF NOT EXISTS status_changes_machine ON status_changes (machine);
 CREATE INDEX IF NOT EXISTS status_changes_at ON status_changes (at);
 CREATE INDEX IF NOT EXISTS gaps_detected_at ON gaps (detected_at);`
@@ -58,8 +62,9 @@ func OpenStore(path string) (*Store, error) {
 
 func (s *Store) Close() error { return s.db.Close() }
 
-// Insert stores obs in one transaction and returns how many were new.
-func (s *Store) Insert(obs []mtconnect.Observation) (int64, error) {
+// Insert stores obs in one transaction and returns how many were new. receivedAt
+// (laptop clock) becomes the received-at time of each machine that sent a new one.
+func (s *Store) Insert(obs []mtconnect.Observation, receivedAt time.Time) (int64, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return 0, err
@@ -77,6 +82,12 @@ func (s *Store) Insert(obs []mtconnect.Observation) (int64, error) {
 		}
 		n, _ := res.RowsAffected()
 		inserted += n
+		if n > 0 {
+			if _, err := tx.Exec(`INSERT INTO received VALUES (?,?) ON CONFLICT (machine) DO UPDATE SET at=excluded.at`,
+				o.Device, receivedAt.UTC().Format(tsFormat)); err != nil {
+				return 0, err
+			}
+		}
 
 		// compare timestamps, not sequences: sequences restart when the agent does
 		if _, err := tx.Exec(`INSERT INTO latest VALUES (?,?,?,?,?,?,?,?,?,?)
@@ -110,6 +121,25 @@ func (s *Store) Latest() ([]mtconnect.Observation, error) {
 		}
 		o.Timestamp, _ = time.Parse(tsFormat, ts)
 		out = append(out, o)
+	}
+	return out, rows.Err()
+}
+
+// ReceivedAt is when each machine's newest observation was stored, by the laptop's
+// clock. A machine with nothing stored since received-at was first recorded is absent.
+func (s *Store) ReceivedAt() (map[string]time.Time, error) {
+	rows, err := s.db.Query(`SELECT machine, at FROM received`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]time.Time{}
+	for rows.Next() {
+		var machine, ts string
+		if err := rows.Scan(&machine, &ts); err != nil {
+			return nil, err
+		}
+		out[machine], _ = time.Parse(tsFormat, ts)
 	}
 	return out, rows.Err()
 }

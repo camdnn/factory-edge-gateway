@@ -96,7 +96,7 @@ func TestStorePruneDeletesOnlyObservationsOlderThanTheCutoff(t *testing.T) {
 	}
 	old1, old2 := o(1, cutoff.Add(-48*time.Hour)), o(2, cutoff.Add(-time.Second))
 	kept := o(3, cutoff.Add(time.Second))
-	if _, err := s.Insert([]mtconnect.Observation{old1, old2, kept}); err != nil {
+	if _, err := s.Insert([]mtconnect.Observation{old1, old2, kept}, cutoff); err != nil {
 		t.Fatal(err)
 	}
 
@@ -107,7 +107,7 @@ func TestStorePruneDeletesOnlyObservationsOlderThanTheCutoff(t *testing.T) {
 		t.Fatalf("second Prune = %d, %v; want 0", n, err)
 	}
 	// a pruned observation is gone, so storing it again counts as new; the kept one is still there
-	if n, _ := s.Insert([]mtconnect.Observation{old1, kept}); n != 1 {
+	if n, _ := s.Insert([]mtconnect.Observation{old1, kept}, cutoff); n != 1 {
 		t.Errorf("re-insert after prune stored %d new, want 1 (only the pruned one)", n)
 	}
 }
@@ -128,10 +128,10 @@ func TestStoreReplayIsHarmless(t *testing.T) {
 	}
 	first := []mtconnect.Observation{obs(10, "READY", t0), obs(11, "ACTIVE", t0.Add(time.Second))}
 
-	if n, err := s.Insert(first); err != nil || n != 2 {
+	if n, err := s.Insert(first, t0); err != nil || n != 2 {
 		t.Fatalf("first insert = %d, %v; want 2", n, err)
 	}
-	if n, err := s.Insert(first[:1]); err != nil || n != 0 {
+	if n, err := s.Insert(first[:1], t0); err != nil || n != 0 {
 		t.Fatalf("replayed insert = %d, %v; want 0", n, err)
 	}
 
@@ -175,5 +175,38 @@ func TestStoreReadsTheLatestStatusChangePerMachine(t *testing.T) {
 	want := map[string]StatusChange{"Mazak": {Status: StatusOK, At: time.Date(2026, 10, 21, 6, 5, 0, 0, time.UTC)}} // Okuma never changed
 	if len(got) != len(want) || got["Mazak"].Status != want["Mazak"].Status || !got["Mazak"].At.Equal(want["Mazak"].At) {
 		t.Errorf("LastStatusChanges = %v, want %v", got, want)
+	}
+}
+
+// Received-at is the laptop clock, so a wrong agent clock never changes it; a replayed
+// observation is nothing new and leaves it alone.
+func TestStoreRecordsReceivedAt(t *testing.T) {
+	s := openTestStore(t)
+	agentClock := time.Date(2026, 10, 21, 3, 0, 0, 0, time.UTC) // 3h behind the laptop
+	t0 := time.Date(2026, 10, 21, 6, 0, 0, 0, time.UTC)
+	o := func(machine string, seq uint64) mtconnect.Observation {
+		return mtconnect.Observation{InstanceID: 1, Sequence: seq, DeviceUUID: machine, Device: machine, DataItemID: "exec", Timestamp: agentClock}
+	}
+
+	if got, err := s.ReceivedAt(); err != nil || len(got) != 0 {
+		t.Fatalf("ReceivedAt on empty store = %v, %v; want none", got, err)
+	}
+	if _, err := s.Insert([]mtconnect.Observation{o("Okuma", 1), o("Mazak", 2)}, t0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Insert([]mtconnect.Observation{o("Okuma", 3), o("Mazak", 2)}, t0.Add(time.Minute)); err != nil { // Mazak's is a replay
+		t.Fatal(err)
+	}
+
+	got, err := s.ReceivedAt()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]time.Time{
+		"Okuma": time.Date(2026, 10, 21, 6, 1, 0, 0, time.UTC),
+		"Mazak": time.Date(2026, 10, 21, 6, 0, 0, 0, time.UTC),
+	}
+	if len(got) != len(want) || !got["Okuma"].Equal(want["Okuma"]) || !got["Mazak"].Equal(want["Mazak"]) {
+		t.Errorf("ReceivedAt = %v, want %v", got, want)
 	}
 }

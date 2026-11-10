@@ -53,6 +53,11 @@ func serve(addr string, store *Store, state *pipelineState) {
 			internalError(w, err)
 			return
 		}
+		machineReceivedAt, err := store.ReceivedAt()
+		if err != nil {
+			internalError(w, err)
+			return
+		}
 		stored, err := store.Count()
 		if err != nil {
 			internalError(w, err)
@@ -62,7 +67,7 @@ func serve(addr string, store *Store, state *pipelineState) {
 		now := time.Now()
 		writeJSON(w, map[string]any{
 			"pipeline": pipelineHealth(state.receivedAt(), state.lag.Load(), agentAvailability(latest), lastGap, state.kafkaErr.Load().(string), now),
-			"machines": machineStatuses(latest, lastChange, now),
+			"machines": machineStatuses(latest, lastChange, machineReceivedAt, now),
 			"events":   events,
 			"stored":   stored,
 		})
