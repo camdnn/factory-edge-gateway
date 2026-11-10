@@ -3,6 +3,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -13,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -52,11 +54,15 @@ func main() {
 
 	client := &mtconnect.Client{BaseURL: *agent, HTTP: &http.Client{Timeout: 10 * time.Second}, Count: 1000}
 
-	cur, err := loadCursor(*statePath)
+	cur, found, err := loadCursor(*statePath)
 	if err != nil {
 		log.Fatal(err)
 	}
-	log.Printf("edge: %s -> %s/%s, resuming at %+v", *agent, *brokers, *topic, cur)
+	start := "from cursor file " + *statePath
+	if !found {
+		cur, start = recoverFromKafka(ctx, kc, strings.Split(*brokers, ","), *topic, *interval)
+	}
+	log.Printf("edge: %s -> %s/%s, resuming at %+v %s", *agent, *brokers, *topic, cur, start)
 
 	for ctx.Err() == nil {
 		next, obs, gap, err := client.Next(ctx, cur)
@@ -77,6 +83,9 @@ func main() {
 			key := fmt.Sprintf("%d-%d", gap.InstanceID, gap.From)
 			records = append(records, &kgo.Record{Topic: *gapsTopic, Key: []byte(key), Value: value})
 		}
+		// in sequence order, so each partition's newest record is its highest sequence
+		// (startup recovery relies on this); agents group observations by component
+		slices.SortFunc(obs, func(a, b mtconnect.Observation) int { return cmp.Compare(a.Sequence, b.Sequence) })
 		for _, o := range obs {
 			value, err := json.Marshal(o)
 			if err != nil {
@@ -120,16 +129,38 @@ func sleep(ctx context.Context, d time.Duration) {
 	}
 }
 
-func loadCursor(path string) (mtconnect.Cursor, error) {
-	var cur mtconnect.Cursor
+// recoverFromKafka rebuilds a lost cursor from the newest observations already in
+// Kafka, so the client's gap rules can decide whether anything was missed, and
+// says how the edge started. It retries until Kafka answers: treating an
+// unreachable Kafka as a first run would skip observations without reporting a Gap.
+func recoverFromKafka(ctx context.Context, kc *kgo.Client, brokers []string, topic string, retry time.Duration) (mtconnect.Cursor, string) {
+	for {
+		tails, err := newestRecords(ctx, kc, brokers, topic)
+		switch {
+		case err == nil:
+			cur, ok := recoverCursor(tails)
+			if !ok {
+				return cur, fmt.Sprintf("(first run: no cursor file and %s is empty)", topic)
+			}
+			return cur, "(recovered from Kafka: no cursor file)"
+		case errors.Is(err, errNotObservation), ctx.Err() != nil:
+			log.Fatalf("edge: can't recover the cursor from %s: %v", topic, err)
+		}
+		log.Printf("edge: no cursor file and can't read %s yet, retrying: %v", topic, err)
+		sleep(ctx, retry)
+	}
+}
+
+// loadCursor reads the saved cursor; found is false when there is no cursor file.
+func loadCursor(path string) (cur mtconnect.Cursor, found bool, err error) {
 	b, err := os.ReadFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
-		return cur, nil
+		return cur, false, nil
 	}
 	if err != nil {
-		return cur, err
+		return cur, false, err
 	}
-	return cur, json.Unmarshal(b, &cur)
+	return cur, true, json.Unmarshal(b, &cur)
 }
 
 // saveCursor writes atomically so a power cut never leaves a half-written file.
