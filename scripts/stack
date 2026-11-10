@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Starts and stops the local stack (Kafka + edge) in plain words:
+#   scripts/stack up | down | status | logs [edge|kafka]
+set -euo pipefail
+compose=(docker compose -f "$(dirname "$0")/../deploy/pi/docker-compose.yml")
+
+case "${1:-}" in
+	up) "${compose[@]}" up -d --build ;;   # rebuilds the edge from the working tree
+	down) "${compose[@]}" down ;;          # keeps Kafka's data and the edge cursor (no -v)
+	status) "${compose[@]}" ps ;;
+	logs) "${compose[@]}" logs -f --tail 50 "${2:-edge}" ;;
+	*)
+		echo "usage: scripts/stack up | down | status | logs [edge|kafka]" >&2
+		exit 1
+		;;
+esac
