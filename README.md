@@ -114,6 +114,16 @@ The simulator on its own:
 go run ./cmd/simulation/
 ```
 
+## Checks
+
+```sh
+git config core.hooksPath .githooks   # once per clone: run the checks before every commit
+scripts/check.sh                      # gofmt, go vet, go test
+scripts/board-diff.sh                 # status board of HEAD vs the working tree, against local Kafka
+```
+
+End-to-end verification steps: [docs/agents/verify-board.md](docs/agents/verify-board.md).
+
 ## Built with
 
 Go, [franz-go](https://github.com/twmb/franz-go) (Kafka client),

@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Enabled per clone with: git config core.hooksPath .githooks
+# It checks the working tree, not the staged snapshot; CI checks what was committed.
+exec "$(git rev-parse --show-toplevel)/scripts/check.sh"
