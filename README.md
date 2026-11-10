@@ -82,7 +82,7 @@ Expect only the gaps from the first startup snapshot, which is a
 - [x] Store-and-forward: no events lost when the network drops
 - [x] Docker Compose deployment for the Pi
 - [ ] Running on a real Raspberry Pi over Tailscale
-- [ ] Continuous integration
+- [x] Continuous integration
 
 ## Running it
 
