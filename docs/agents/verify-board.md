@@ -38,3 +38,22 @@ The cursor lives in `pi_edge-state` at `/var/lib/edge/cursor.json` as `{"instanc
 | First run | Remove the edge and its volume as in the first case, delete the topic (`docker exec pi-kafka-1 /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --delete --topic mtconnect.observations`), then start the edge | `first run`, no `GAP` |
 
 The last two cases change local data: a Gap event lands on `pipeline.gaps`, and the first-run case erases the topic.
+
+## Cycles
+
+Unit tests cover the Cycle rules (`cmd/consumer/cycles_test.go`) and housekeeping working through stored observations (`cmd/consumer/store_test.go`). These steps check the real feed, a restart and a rebuild. Run the consumer as the README does, with `-continuous-cycle-timing=OKUMA`, and read Cycles from the board or the database:
+
+```sh
+curl -s localhost:8090/api/board | jq -c '.cycles[] | {machine, program, learning, seconds: [.recent[].seconds | floor]}'
+sqlite3 observations.db "SELECT count(*), sum(length(program||start||end||interrupted)) FROM cycles"   # a fingerprint of every Cycle
+```
+
+| Case | Setup | Expect |
+| --- | --- | --- |
+| Live feed | Let the consumer run through at least one Okuma loop (about 25 minutes) | One row per Okuma Program, typically TRAN about 19 s, HOB about 3m25s, 4B about 9m49s and 1E about 10m56s; no Mazak rows |
+| Restart | Take the fingerprint, stop the consumer, start it again, wait a few seconds | The same fingerprint, unless a part finished meanwhile |
+| Rebuild | With the consumer running, `sqlite3 -cmd ".timeout 5000" observations.db "DELETE FROM cycles; DELETE FROM cycle_progress"`, wait a few seconds | The same fingerprint: housekeeping works through the stored observations again on its next tick |
+
+A rebuild covers only observations still within the 7-day retention, so Cycles older than that are lost for good once cleared. Open question: what a Gap does to Cycle timing is not yet decided. Today a Cycle that spans a Gap is timed across it, even though parts made during the Gap were never seen; on 2026-11-11 two such Cycles took 7.9 h and 1.9 h.
+
+Checked on 2026-11-11 against a copy of a database holding observations from 2026-11-10 to 2026-11-11: 208 Okuma Cycles in 4 Programs, none Interrupted, and the same 208 after a restart and after a rebuild.

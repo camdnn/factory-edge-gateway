@@ -90,7 +90,7 @@ Everything on one machine (Docker required):
 
 ```sh
 docker compose -f deploy/pi/docker-compose.yml up -d --build   # Kafka + edge
-go run ./cmd/consumer                                           # http://localhost:8090
+go run ./cmd/consumer -continuous-cycle-timing=OKUMA            # http://localhost:8090
 ```
 
 On the Pi (Raspberry Pi 4 with 4 GB of RAM, **64-bit** Raspberry Pi OS since
@@ -105,7 +105,7 @@ PI_TAILNET_NAME=<pi-name>.<tailnet>.ts.net PI_TAILSCALE_IP=$(tailscale ip -4) do
 On the laptop (joined to the same tailnet):
 
 ```sh
-go run ./cmd/consumer -brokers <pi-name>.<tailnet>.ts.net:9092
+go run ./cmd/consumer -brokers <pi-name>.<tailnet>.ts.net:9092 -continuous-cycle-timing=OKUMA
 ```
 
 The simulator on its own:

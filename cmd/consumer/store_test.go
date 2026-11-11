@@ -3,6 +3,8 @@ package main
 import (
 	"fmt"
 	"path/filepath"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -208,5 +210,134 @@ func TestStoreRecordsReceivedAt(t *testing.T) {
 	}
 	if len(got) != len(want) || !got["Okuma"].Equal(want["Okuma"]) || !got["Mazak"].Equal(want["Mazak"]) {
 		t.Errorf("ReceivedAt = %v, want %v", got, want)
+	}
+}
+
+func TestStoreCyclesAndProgressRoundTrip(t *testing.T) {
+	s := openTestStore(t)
+	progress := CycleProgress{After: 1730791, Count: 3, Counted: true, Last: t0.Add(10 * time.Minute), Program: "4B",
+		Interrupted: true, Faults: map[string]bool{"coolant": true}}
+	cycles := []Cycle{
+		{Machine: "OKUMA", Program: "1E", Start: t0, End: t0.Add(10*time.Minute + 55*time.Second)},
+		{Machine: "OKUMA", Program: "TRAN", Start: t0.Add(11 * time.Minute), End: t0.Add(11*time.Minute + 19*time.Second), Interrupted: true},
+	}
+
+	if got, err := s.CycleProgress(); err != nil || len(got) != 0 {
+		t.Fatalf("CycleProgress on empty store = %v, %v; want none", got, err)
+	}
+	if err := s.SaveCycles(cycles, map[string]CycleProgress{"OKUMA": progress}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SaveCycles(cycles[1:], map[string]CycleProgress{"OKUMA": progress}); err != nil { // saved again after a crash
+		t.Fatal(err)
+	}
+
+	got, err := s.CycleProgress()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, map[string]CycleProgress{"OKUMA": progress}) {
+		t.Errorf("CycleProgress = %+v, want %+v", got, progress)
+	}
+	recent, counts, err := s.RecentCycles(10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if show(recent) != "[TRAN 19s! 1E 10m55s]" { // newest first, each kept once
+		t.Errorf("RecentCycles = %s, want [TRAN 19s! 1E 10m55s]", show(recent))
+	}
+	if want := (map[ProgramKey]int{{Machine: "OKUMA", Program: "1E"}: 1}); fmt.Sprint(counts) != fmt.Sprint(want) {
+		t.Errorf("non-Interrupted counts = %v, want %v", counts, want)
+	}
+}
+
+func TestStoreRecentCyclesPerProgram(t *testing.T) {
+	s := openTestStore(t)
+	var cycles []Cycle
+	for i := range 4 {
+		start := t0.Add(time.Duration(i) * time.Minute)
+		cycles = append(cycles,
+			Cycle{Machine: "OKUMA", Program: "TRAN", Start: start, End: start.Add(time.Duration(17+i) * time.Second)},
+			Cycle{Machine: "SIM", Program: "TRAN", Start: start, End: start.Add(20 * time.Second), Interrupted: i == 0})
+	}
+	if err := s.SaveCycles(cycles, nil); err != nil {
+		t.Fatal(err)
+	}
+	recent, counts, err := s.RecentCycles(2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if show(recent) != "[TRAN 20s TRAN 20s TRAN 20s TRAN 19s]" {
+		t.Errorf("RecentCycles = %s, want the 2 newest of each machine", show(recent))
+	}
+	if want := (map[ProgramKey]int{{Machine: "OKUMA", Program: "TRAN"}: 4, {Machine: "SIM", Program: "TRAN"}: 3}); fmt.Sprint(counts) != fmt.Sprint(want) {
+		t.Errorf("non-Interrupted counts = %v, want %v (all Cycles, not only the recent)", counts, want)
+	}
+}
+
+// Cycles come from what housekeeping reads after its progress point, so a replay, which
+// stores nothing new, can never be read twice.
+func TestStoreReplaysNotReadForCycles(t *testing.T) {
+	s := openTestStore(t)
+	o := func(seq uint64, typ, value string) mtconnect.Observation {
+		return mtconnect.Observation{InstanceID: 1, Sequence: seq, Device: "OKUMA", DeviceUUID: "OKUMA", DataItemID: typ,
+			Category: "Event", Type: typ, Value: value, Timestamp: t0.Add(time.Duration(seq) * time.Minute)}
+	}
+	batch := []mtconnect.Observation{o(1, "PartCount", "0"), o(2, "RotaryVelocity", "300"), o(3, "PartCount", "1")}
+	if _, err := s.Insert(batch, t0); err != nil {
+		t.Fatal(err)
+	}
+	first, err := s.CycleObservations(0, 100)
+	if err != nil || len(first) != 2 {
+		t.Fatalf("CycleObservations = %+v, %v; want the 2 part counts, not the spindle speed", first, err)
+	}
+	if _, err := s.Insert(append(batch, o(4, "PartCount", "2")), t0); err != nil {
+		t.Fatal(err)
+	}
+	next, err := s.CycleObservations(first[1].Row, 100)
+	if err != nil || len(next) != 1 || next[0].Value != "2" {
+		t.Errorf("CycleObservations after the replay = %+v, %v; want only the new part count 2", next, err)
+	}
+}
+
+// Housekeeping works through stored observations a batch at a time, across restarts and replays.
+func TestFindNewCyclesNoLossNoRepeats(t *testing.T) {
+	s := openTestStore(t)
+	stored := func(obs []mtconnect.Observation, from uint64) []mtconnect.Observation {
+		var out []mtconnect.Observation
+		for i, o := range obs {
+			o.InstanceID, o.Sequence = 1, from+uint64(i)
+			out = append(out, o)
+		}
+		return out
+	}
+	loop := stored(okumaLoop, 1)
+	mazak := []mtconnect.Observation{{InstanceID: 2, Sequence: 1, Device: "Mazak", DeviceUUID: "Mazak", DataItemID: "pc",
+		Category: "Event", Type: "PartCount", Value: "0", Timestamp: t0}}
+	continuous := map[string]bool{"OKUMA": true}
+
+	if _, err := s.Insert(slices.Concat(loop[:12], mazak), t0); err != nil {
+		t.Fatal(err)
+	}
+	for range 3 { // 5 at a time works through the first 13 observations, then find nothing new
+		if err := findNewCycles(s, continuous, 5); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.Insert(loop, t0); err != nil { // the first 12 again, replayed by Kafka, then the rest
+		t.Fatal(err)
+	}
+	for range 4 {
+		if err := findNewCycles(s, continuous, 5); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	recent, _, err := s.RecentCycles(10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "[TRAN 19s 4B 9m49s 1E 10m56s]"; show(recent) != want {
+		t.Errorf("cycles = %s, want %s", show(recent), want)
 	}
 }

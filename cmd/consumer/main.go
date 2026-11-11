@@ -24,6 +24,7 @@ func main() {
 	gapsTopic := flag.String("gaps-topic", "pipeline.gaps", "Kafka topic for gap events (see docs/adr/0001)")
 	group := flag.String("group", "laptop", "Kafka consumer group")
 	dbPath := flag.String("db", "observations.db", "SQLite database file")
+	continuousTiming := flag.String("continuous-cycle-timing", "", "comma-separated machines whose Cycles are timed across part count resets (see docs/adr/0002)")
 	addr := flag.String("addr", "127.0.0.1:8090", "status board address (localhost only by default)")
 	flag.Parse()
 
@@ -61,7 +62,13 @@ func main() {
 		log.Fatal(err)
 	}
 	defer pinger.Close()
-	go housekeep(ctx, store, &state, pinger)
+	continuous := map[string]bool{}
+	for _, m := range strings.Split(*continuousTiming, ",") {
+		if m = strings.TrimSpace(m); m != "" {
+			continuous[m] = true
+		}
+	}
+	go housekeep(ctx, store, &state, pinger, continuous)
 
 	consume(ctx, newClient, *topic, *gapsTopic, store, &state)
 }

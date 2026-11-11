@@ -13,7 +13,10 @@ import (
 //go:embed index.html
 var indexHTML []byte
 
-const eventsOnBoard = 10
+const (
+	eventsOnBoard = 10
+	cyclesOnBoard = 10 // recent Cycles per machine and Program
+)
 
 // serve runs the status board: the page itself and the JSON it reads.
 func serve(addr string, store *Store, state *pipelineState) {
@@ -58,6 +61,11 @@ func serve(addr string, store *Store, state *pipelineState) {
 			internalError(w, err)
 			return
 		}
+		recentCycles, uninterrupted, err := store.RecentCycles(cyclesOnBoard)
+		if err != nil {
+			internalError(w, err)
+			return
+		}
 		stored, err := store.Count()
 		if err != nil {
 			internalError(w, err)
@@ -68,6 +76,7 @@ func serve(addr string, store *Store, state *pipelineState) {
 		writeJSON(w, map[string]any{
 			"pipeline": pipelineHealth(state.receivedAt(), state.lag.Load(), agentAvailability(latest), lastGap, state.kafkaErr.Load().(string), now),
 			"machines": machineStatuses(latest, lastChange, machineReceivedAt, now),
+			"cycles":   cycleRows(recentCycles, uninterrupted),
 			"events":   events,
 			"stored":   stored,
 		})

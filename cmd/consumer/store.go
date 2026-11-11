@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -42,6 +43,17 @@ CREATE TABLE IF NOT EXISTS status_changes (
 CREATE TABLE IF NOT EXISTS received (
 	machine TEXT PRIMARY KEY, at TEXT NOT NULL -- laptop clock
 );
+-- Cycles and Cycle progress are kept forever: they outlive the observations they came from
+CREATE TABLE IF NOT EXISTS cycles (
+	machine TEXT NOT NULL, program TEXT NOT NULL, start TEXT NOT NULL, end TEXT NOT NULL, interrupted INTEGER NOT NULL,
+	PRIMARY KEY (machine, end) -- a machine finishes one part at a time, so a Cycle found twice is kept once
+);
+CREATE TABLE IF NOT EXISTS cycle_progress (
+	machine TEXT PRIMARY KEY,
+	after   INTEGER NOT NULL, -- observations rowid worked through; rowids only grow, as Count relies on too
+	state   TEXT NOT NULL     -- CycleProgress as JSON
+);
+CREATE INDEX IF NOT EXISTS cycles_program ON cycles (machine, program, end);
 CREATE INDEX IF NOT EXISTS status_changes_machine ON status_changes (machine);
 CREATE INDEX IF NOT EXISTS status_changes_at ON status_changes (at);
 CREATE INDEX IF NOT EXISTS gaps_detected_at ON gaps (detected_at);`
@@ -317,4 +329,137 @@ func (s *Store) RecentEvents(limit int) ([]Event, error) {
 
 	slices.SortStableFunc(events, func(a, b Event) int { return b.At.Compare(a.At) })
 	return events[:min(limit, len(events))], nil
+}
+
+// Arrival is a stored observation with its place in arrival order.
+type Arrival struct {
+	Row int64
+	mtconnect.Observation
+}
+
+// CycleObservations returns up to limit stored observations that finding Cycles
+// reads (part counts, Programs, Run states, Conditions and emergency stops), in
+// arrival order after row after.
+func (s *Store) CycleObservations(after int64, limit int) ([]Arrival, error) {
+	rows, err := s.db.Query(`SELECT rowid, device, device_uuid, component, data_item_id, name, category, type, sub_type, value, ts
+		FROM observations
+		WHERE rowid > ? AND (type IN ('PartCount', 'Program', 'Execution', 'EmergencyStop') OR category = 'Condition')
+		ORDER BY rowid LIMIT ?`, after, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Arrival
+	for rows.Next() {
+		var a Arrival
+		var ts string
+		if err := rows.Scan(&a.Row, &a.Device, &a.DeviceUUID, &a.Component, &a.DataItemID, &a.Name,
+			&a.Category, &a.Type, &a.SubType, &a.Value, &ts); err != nil {
+			return nil, err
+		}
+		if a.Timestamp, err = time.Parse(tsFormat, ts); err != nil {
+			return nil, fmt.Errorf("observation %d: %w", a.Row, err)
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+// CycleProgress is how far finding Cycles has got for each machine. A machine
+// it has never worked on, or whose progress was cleared, is absent.
+func (s *Store) CycleProgress() (map[string]CycleProgress, error) {
+	rows, err := s.db.Query(`SELECT machine, after, state FROM cycle_progress`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]CycleProgress{}
+	for rows.Next() {
+		var machine, state string
+		var p CycleProgress
+		if err := rows.Scan(&machine, &p.After, &state); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal([]byte(state), &p); err != nil {
+			return nil, fmt.Errorf("cycle progress for %s: %w", machine, err)
+		}
+		out[machine] = p
+	}
+	return out, rows.Err()
+}
+
+// SaveCycles stores new Cycles and each machine's progress together, so a
+// restart neither loses nor repeats a Cycle. A Cycle already stored is ignored.
+func (s *Store) SaveCycles(cycles []Cycle, progress map[string]CycleProgress) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, c := range cycles {
+		if _, err := tx.Exec(`INSERT OR IGNORE INTO cycles VALUES (?,?,?,?,?)`, c.Machine, c.Program,
+			c.Start.UTC().Format(tsFormat), c.End.UTC().Format(tsFormat), c.Interrupted); err != nil {
+			return err
+		}
+	}
+	for machine, p := range progress {
+		state, err := json.Marshal(p)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`INSERT INTO cycle_progress VALUES (?,?,?)
+			ON CONFLICT (machine) DO UPDATE SET after=excluded.after, state=excluded.state`, machine, p.After, string(state)); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// ProgramKey names one Program on one machine.
+type ProgramKey struct{ Machine, Program string }
+
+// RecentCycles returns the n newest Cycles of each machine and Program, newest
+// first, and how many non-Interrupted Cycles each has ever had.
+func (s *Store) RecentCycles(n int) ([]Cycle, map[ProgramKey]int, error) {
+	rows, err := s.db.Query(`SELECT machine, program, start, end, interrupted FROM (
+			SELECT *, ROW_NUMBER() OVER (PARTITION BY machine, program ORDER BY end DESC) AS age FROM cycles
+		) WHERE age <= ? ORDER BY end DESC, machine`, n)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer rows.Close()
+	var recent []Cycle
+	for rows.Next() {
+		var c Cycle
+		var start, end string
+		if err := rows.Scan(&c.Machine, &c.Program, &start, &end, &c.Interrupted); err != nil {
+			return nil, nil, err
+		}
+		if c.Start, err = time.Parse(tsFormat, start); err != nil {
+			return nil, nil, fmt.Errorf("cycle of %s: %w", c.Machine, err)
+		}
+		if c.End, err = time.Parse(tsFormat, end); err != nil {
+			return nil, nil, fmt.Errorf("cycle of %s: %w", c.Machine, err)
+		}
+		recent = append(recent, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, nil, err
+	}
+
+	rows, err = s.db.Query(`SELECT machine, program, COUNT(*) FROM cycles WHERE NOT interrupted GROUP BY machine, program`)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer rows.Close()
+	counts := map[ProgramKey]int{}
+	for rows.Next() {
+		var k ProgramKey
+		var c int
+		if err := rows.Scan(&k.Machine, &k.Program, &c); err != nil {
+			return nil, nil, err
+		}
+		counts[k] = c
+	}
+	return recent, counts, rows.Err()
 }
