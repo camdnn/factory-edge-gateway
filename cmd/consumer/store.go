@@ -212,6 +212,9 @@ func (s *Store) LastGap() (*mtconnect.Gap, error) {
 	return &gaps[0], nil
 }
 
+// Gaps returns every Gap ever stored, newest first.
+func (s *Store) Gaps() ([]mtconnect.Gap, error) { return s.gaps(-1) } // a negative LIMIT is no limit in SQLite
+
 func (s *Store) gaps(limit int) ([]mtconnect.Gap, error) {
 	rows, err := s.db.Query(`SELECT instance_id, from_sequence, resumed_at, missed, reason, detected_at
 		FROM gaps ORDER BY detected_at DESC LIMIT ?`, limit)
@@ -341,7 +344,7 @@ type Arrival struct {
 // reads (part counts, Programs, Run states, Conditions and emergency stops), in
 // arrival order after row after.
 func (s *Store) CycleObservations(after int64, limit int) ([]Arrival, error) {
-	rows, err := s.db.Query(`SELECT rowid, device, device_uuid, component, data_item_id, name, category, type, sub_type, value, ts
+	rows, err := s.db.Query(`SELECT rowid, instance_id, sequence, device, device_uuid, component, data_item_id, name, category, type, sub_type, value, ts
 		FROM observations
 		WHERE rowid > ? AND (type IN ('PartCount', 'Program', 'Execution', 'EmergencyStop') OR category = 'Condition')
 		ORDER BY rowid LIMIT ?`, after, limit)
@@ -353,7 +356,7 @@ func (s *Store) CycleObservations(after int64, limit int) ([]Arrival, error) {
 	for rows.Next() {
 		var a Arrival
 		var ts string
-		if err := rows.Scan(&a.Row, &a.Device, &a.DeviceUUID, &a.Component, &a.DataItemID, &a.Name,
+		if err := rows.Scan(&a.Row, &a.InstanceID, &a.Sequence, &a.Device, &a.DeviceUUID, &a.Component, &a.DataItemID, &a.Name,
 			&a.Category, &a.Type, &a.SubType, &a.Value, &ts); err != nil {
 			return nil, err
 		}

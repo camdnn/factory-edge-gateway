@@ -90,11 +90,16 @@ func consume(ctx context.Context, newClient func() *kgo.Client, topic, gapsTopic
 			}
 		})
 
-		inserted, err := store.Insert(obs, time.Now())
+		// Gaps first, so housekeeping never finds Cycles in observations past a Gap it can't see yet
+		var err error
 		for _, g := range gaps {
 			if err == nil {
 				err = store.InsertGap(g)
 			}
+		}
+		var inserted int64
+		if err == nil {
+			inserted, err = store.Insert(obs, time.Now())
 		}
 		if err != nil {
 			// exit without committing: on restart Kafka redelivers from the last committed offset

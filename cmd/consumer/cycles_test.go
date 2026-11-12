@@ -69,7 +69,7 @@ var okumaLoop = []mtconnect.Observation{
 }
 
 func TestCyclesOkumaWithContinuousTiming(t *testing.T) {
-	got, _ := findCycles(okumaLoop, CycleProgress{}, true)
+	got, _ := findCycles(okumaLoop, nil, CycleProgress{}, true)
 	want := "[1E 10m56s 4B 9m49s TRAN 19s]" // HOB's part is the first seen, so nothing times it
 	if show(got) != want {
 		t.Errorf("cycles = %s, want %s", show(got), want)
@@ -77,7 +77,7 @@ func TestCyclesOkumaWithContinuousTiming(t *testing.T) {
 }
 
 func TestCyclesOkumaWithoutContinuousTiming(t *testing.T) {
-	got, _ := findCycles(okumaLoop, CycleProgress{}, false)
+	got, _ := findCycles(okumaLoop, nil, CycleProgress{}, false)
 	want := "[4B 9m49s]" // every other part is the first of a batch
 	if show(got) != want {
 		t.Errorf("cycles = %s, want %s", show(got), want)
@@ -96,7 +96,7 @@ func TestCyclesResetStartsANewBatch(t *testing.T) {
 		parts(110*time.Second, "0"), // a repeated value is not a part
 		parts(130*time.Second, "1"),
 		parts(150*time.Second, "2"),
-	}, CycleProgress{}, false)
+	}, nil, CycleProgress{}, false)
 	want := "[ 20s  20s  20s]"
 	if show(got) != want {
 		t.Errorf("cycles = %s, want %s", show(got), want)
@@ -110,7 +110,7 @@ func TestCyclesIgnoreAnIncreaseUnderFiveSeconds(t *testing.T) {
 		parts(14900*time.Millisecond, "3"), // 4.9 s after the previous genuine increase
 		parts(15*time.Second, "4"),         // 5 s after it: a Cycle, timed from that increase
 		parts(40*time.Second, "5"),
-	}, CycleProgress{}, false)
+	}, nil, CycleProgress{}, false)
 	want := "[ 5s  25s]"
 	if show(got) != want {
 		t.Errorf("cycles = %s, want %s", show(got), want)
@@ -153,7 +153,7 @@ var stopsAndFaults = []mtconnect.Observation{
 }
 
 func TestCyclesInterruptedByAStopOrFault(t *testing.T) {
-	got, _ := findCycles(stopsAndFaults, CycleProgress{}, false)
+	got, _ := findCycles(stopsAndFaults, nil, CycleProgress{}, false)
 	want := "[ 1m0s!  20s  20s  20s!  20s!  20s!  20s!  20s!  20s]"
 	if show(got) != want {
 		t.Errorf("cycles = %s, want %s", show(got), want)
@@ -173,20 +173,69 @@ func TestCyclesNoneWithoutIncreases(t *testing.T) {
 		mazak(parts(10*time.Minute, "0")),
 		mazak(program(11*time.Minute, "4000-OP20")),
 		mazak(run(11*time.Minute, "ACTIVE")),
-	}, CycleProgress{}, false)
+	}, nil, CycleProgress{}, false)
 	if len(got) != 0 {
 		t.Errorf("cycles = %s, want none", show(got))
 	}
 }
 
+// numbered gives o its place in an agent's numbering.
+func numbered(instance, seq uint64, o mtconnect.Observation) mtconnect.Observation {
+	o.InstanceID, o.Sequence = instance, seq
+	return o
+}
+
+// The 1E Cycle from 2026-11-10: the edge fell behind the agent's buffer, and the
+// parts made meanwhile were never seen, so the first part after the Gap starts a new batch.
+var behind = []mtconnect.Gap{{InstanceID: 7, From: 102, ResumedAt: 900, Missed: 798, Reason: mtconnect.GapFellBehind}}
+var acrossGap = []mtconnect.Observation{
+	numbered(7, 99, parts(-10*time.Minute, "0")),
+	numbered(7, 100, parts(0, "1")), // the first increase seen starts timing
+	numbered(7, 101, parts(10*time.Minute+56*time.Second, "2")),
+	// the Gap: sequences 102 to 899 never collected
+	numbered(7, 850, parts(7*time.Hour+56*time.Minute, "45")), // from the snapshot after the Gap: no Cycle
+	numbered(7, 901, parts(8*time.Hour+6*time.Minute+56*time.Second, "46")),
+}
+
+func TestCyclesGapStartsANewBatch(t *testing.T) {
+	for _, continuous := range []bool{true, false} { // unlike a reset, a Gap breaks continuous timing too
+		got, _ := findCycles(acrossGap, behind, CycleProgress{}, continuous)
+		if want := "[ 10m56s  10m56s]"; show(got) != want {
+			t.Errorf("continuous %v: cycles = %s, want %s", continuous, show(got), want)
+		}
+	}
+}
+
+// An agent restart caught at once misses no observations the edge can count, but parts may still go unseen.
+func TestCyclesAgentRestartStartsANewBatch(t *testing.T) {
+	gaps := []mtconnect.Gap{
+		{InstanceID: 3, From: 40, ResumedAt: 60, Missed: 20, Reason: mtconnect.GapFellBehind}, // another agent's
+		{InstanceID: 7, From: 102, ResumedAt: 5, Missed: 0, Reason: mtconnect.GapAgentRestarted},
+	}
+	got, _ := findCycles([]mtconnect.Observation{
+		numbered(7, 99, parts(-20*time.Second, "0")),
+		numbered(7, 100, parts(0, "1")),
+		numbered(7, 101, parts(20*time.Second, "2")),
+		numbered(8, 3, parts(40*time.Second, "3")), // the restarted agent: no Cycle
+		numbered(8, 6, parts(60*time.Second, "4")),
+	}, gaps, CycleProgress{}, false)
+	if want := "[ 20s  20s]"; show(got) != want {
+		t.Errorf("cycles = %s, want %s", show(got), want)
+	}
+}
+
 // Housekeeping finds Cycles a few observations at a time, so a split anywhere must not change them.
 func TestCyclesSameWhenFoundInTwoCalls(t *testing.T) {
+	cases := []struct {
+		obs  []mtconnect.Observation
+		gaps []mtconnect.Gap
+	}{{okumaLoop, nil}, {stopsAndFaults, nil}, {acrossGap, behind}}
 	for _, continuous := range []bool{true, false} {
-		for _, obs := range [][]mtconnect.Observation{okumaLoop, stopsAndFaults} {
-			whole, _ := findCycles(obs, CycleProgress{}, continuous)
-			for split := range obs {
-				first, p := findCycles(obs[:split], CycleProgress{}, continuous)
-				second, _ := findCycles(obs[split:], p, continuous)
+		for _, c := range cases {
+			whole, _ := findCycles(c.obs, c.gaps, CycleProgress{}, continuous)
+			for split := range c.obs {
+				first, p := findCycles(c.obs[:split], c.gaps, CycleProgress{}, continuous)
+				second, _ := findCycles(c.obs[split:], c.gaps, p, continuous)
 				if got := show(append(first, second...)); got != show(whole) {
 					t.Errorf("continuous %v, split at %d: cycles = %s, want %s", continuous, split, got, show(whole))
 				}
@@ -209,7 +258,7 @@ func TestCyclesBelongToTheActiveProgram(t *testing.T) {
 		parts(2*time.Minute, "2"),
 		sub(program(2*time.Minute, "O1001"), "MAIN"),
 		parts(3*time.Minute, "3"),
-	}, CycleProgress{}, false)
+	}, nil, CycleProgress{}, false)
 	want := "[O2000 1m0s O2000 1m0s]"
 	if show(got) != want {
 		t.Errorf("cycles = %s, want %s", show(got), want)

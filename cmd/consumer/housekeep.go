@@ -97,6 +97,10 @@ func findNewCycles(store *Store, continuous map[string]bool, limit int) error {
 	if err != nil || len(arrivals) == 0 {
 		return err
 	}
+	gaps, err := store.Gaps()
+	if err != nil {
+		return err
+	}
 
 	byMachine := map[string][]mtconnect.Observation{}
 	for _, a := range arrivals {
@@ -111,7 +115,7 @@ func findNewCycles(store *Store, continuous map[string]bool, limit int) error {
 		if progress[m].After >= end {
 			continue
 		}
-		found, p := findCycles(byMachine[m], progress[m], continuous[m])
+		found, p := findCycles(byMachine[m], gaps, progress[m], continuous[m])
 		p.After = end
 		cycles = append(cycles, found...)
 		saved[m] = p

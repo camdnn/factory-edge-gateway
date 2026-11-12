@@ -341,3 +341,31 @@ func TestFindNewCyclesNoLossNoRepeats(t *testing.T) {
 		t.Errorf("cycles = %s, want %s", show(recent), want)
 	}
 }
+
+// Housekeeping may already have worked through the observations before a Gap when the Gap is stored.
+func TestFindNewCyclesGapStartsANewBatch(t *testing.T) {
+	s := openTestStore(t)
+	if _, err := s.Insert(acrossGap[:3], t0); err != nil {
+		t.Fatal(err)
+	}
+	if err := findNewCycles(s, nil, 100); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.InsertGap(behind[0]); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Insert(acrossGap[3:], t0); err != nil {
+		t.Fatal(err)
+	}
+	if err := findNewCycles(s, nil, 100); err != nil {
+		t.Fatal(err)
+	}
+
+	recent, _, err := s.RecentCycles(10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "[ 10m56s  10m56s]"; show(recent) != want {
+		t.Errorf("cycles = %s, want %s", show(recent), want)
+	}
+}

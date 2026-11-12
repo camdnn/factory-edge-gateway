@@ -41,7 +41,7 @@ _Avoid_: Status history entry, transition
 How well machines are making parts, judged one part at a time.
 
 **Cycle**:
-The making of one part, from one genuine part count increase to the next, belonging to the Program running when the part finished. A part count reset starts a new batch, and the first part after it has no Cycle, except on machines that reset at every Program change, where timing carries on across the reset. An increase too soon after the previous one to be a real part is not a Cycle.
+The making of one part, from one genuine part count increase to the next, belonging to the Program running when the part finished. A part count reset starts a new batch, and the first part after it has no Cycle, except on machines that reset at every Program change, where timing carries on across the reset. A Gap always starts a new batch, on every machine of that agent, because parts made during it were never seen. An increase too soon after the previous one to be a real part is not a Cycle.
 _Avoid_: Run, execution time (the time from ACTIVE to finish, a different measure)
 
 **Cycle health**:
