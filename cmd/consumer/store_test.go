@@ -648,3 +648,69 @@ func TestFindNewCyclesBackwardsStartsANewBatch(t *testing.T) {
 		t.Errorf("cycles = %s, want %s", show(recent), want)
 	}
 }
+
+// Placing Gaps reads only those in the machines' instances past their progress,
+// and every Gap in an instance housekeeping is about to work through (#16).
+func TestStoreGapsFor(t *testing.T) {
+	s := openTestStore(t)
+	gap := func(instance, epoch, from uint64) mtconnect.Gap {
+		return mtconnect.Gap{DetectedAt: t0, InstanceID: instance, Epoch: epoch, From: from, ResumedAt: from + 10, ResumedEpoch: epoch, Reason: mtconnect.GapFellBehind}
+	}
+	passed, ahead, nextEpoch := gap(7, 0, 40), gap(7, 0, 100), gap(7, 1, 10)
+	other, working := gap(8, 0, 5), gap(9, 0, 1)
+	for _, g := range []mtconnect.Gap{passed, ahead, nextEpoch, other, working} {
+		if err := s.InsertGap(g); err != nil {
+			t.Fatal(err)
+		}
+	}
+	progress := map[string]CycleProgress{"OKUMA": {Instance: 7, Sequence: 50}}
+	gaps, err := s.GapsFor(progress, []uint64{9})
+	if want := []mtconnect.Gap{ahead, nextEpoch, working}; err != nil || !reflect.DeepEqual(gaps, want) {
+		t.Errorf("GapsFor = %+v, %v; want %+v", gaps, err, want)
+	}
+}
+
+// The late check reads only the Gaps stored after the ones already checked (#16).
+func TestStoreGapsSince(t *testing.T) {
+	s := openTestStore(t)
+	var stored []mtconnect.Gap
+	for from := range uint64(3) {
+		g := mtconnect.Gap{DetectedAt: t0, InstanceID: 7, From: 100 * (from + 1), Reason: mtconnect.GapFellBehind}
+		if err := s.InsertGap(g); err != nil {
+			t.Fatal(err)
+		}
+		stored = append(stored, g)
+	}
+	all, err := s.GapsSince(0)
+	if err != nil || len(all) != 3 {
+		t.Fatalf("GapsSince(0) = %+v, %v; want all 3", all, err)
+	}
+	after, err := s.GapsSince(all[0].Row)
+	if gaps, want := plain(after), stored[1:]; err != nil || !reflect.DeepEqual(gaps, want) {
+		t.Errorf("GapsSince(first) = %+v, %v; want %+v", gaps, err, want)
+	}
+}
+
+// The agent restarts and then falls behind in its new instance, all within the
+// observations of one tick: the Gap in the new instance still starts a new batch (#16).
+func TestFindNewCyclesGapAfterRestart(t *testing.T) {
+	s := openTestStore(t)
+	restart := mtconnect.Gap{InstanceID: 7, From: 102, ResumedAt: 3, Reason: mtconnect.GapAgentRestarted}
+	behindAgain := mtconnect.Gap{InstanceID: 8, From: 7, ResumedAt: 850, Missed: 843, Reason: mtconnect.GapFellBehind}
+	restarted := []mtconnect.Observation{
+		numbered(8, 3, parts(time.Hour, "3")), // the restarted agent: no Cycle
+		numbered(8, 6, parts(time.Hour+10*time.Minute+56*time.Second, "4")),
+		// the Gap: sequences 7 to 849 never collected
+		numbered(8, 850, parts(8*time.Hour, "45")), // no Cycle
+		numbered(8, 901, parts(8*time.Hour+10*time.Minute+56*time.Second, "46")),
+	}
+	housekeepEach(t, s, insert(s, acrossGap[:3]), insertGap(s, restart), insertGap(s, behindAgain), insert(s, restarted))
+	wantCycles(t, s, "[ 10m56s  10m56s  10m56s]")
+}
+
+// Housekeeping from no progress, with the Gap already stored, as after a rebuild.
+func TestFindNewCyclesGapFromStart(t *testing.T) {
+	s := openTestStore(t)
+	housekeepEach(t, s, insertGap(s, behind[0]), insert(s, acrossGap))
+	wantCycles(t, s, "[ 10m56s  10m56s]")
+}

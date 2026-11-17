@@ -270,12 +270,17 @@ func (s *Store) LastGap() (*mtconnect.Gap, error) {
 
 // Gaps returns every Gap ever stored, newest first.
 func (s *Store) Gaps() ([]mtconnect.Gap, error) {
-	stored, err := s.GapArrivals()
+	stored, err := s.gaps(-1) // a negative LIMIT is no limit in SQLite
+	return plain(stored), err
+}
+
+// plain drops each Gap's place in the order Gaps were stored.
+func plain(stored []GapArrival) []mtconnect.Gap {
 	var out []mtconnect.Gap
 	for _, g := range stored {
 		out = append(out, g.Gap)
 	}
-	return out, err
+	return out
 }
 
 // GapArrival is a stored Gap with its place in the order Gaps were stored.
@@ -284,13 +289,45 @@ type GapArrival struct {
 	mtconnect.Gap
 }
 
-// GapArrivals returns every Gap ever stored, newest first, with its place in
-// the order Gaps were stored.
-func (s *Store) GapArrivals() ([]GapArrival, error) { return s.gaps(-1) } // a negative LIMIT is no limit in SQLite
+// GapsSince returns the Gaps stored after row, in the order they were stored.
+func (s *Store) GapsSince(row int64) ([]GapArrival, error) {
+	return s.gapsWhere(`rowid > ? ORDER BY rowid`, row)
+}
 
 func (s *Store) gaps(limit int) ([]GapArrival, error) {
+	return s.gapsWhere(`1 ORDER BY detected_at DESC LIMIT ?`, limit)
+}
+
+// GapsFor returns, in the order they were stored, the Gaps that finding Cycles
+// can still place:
+//   - those in a machine's progress instance that come after its progress, by
+//     the agent's numbering (ADR 0004, ADR 0005);
+//   - every Gap in instances, the instances of the observations about to be
+//     worked through, since a machine can move to one part way through (#16).
+func (s *Store) GapsFor(progress map[string]CycleProgress, instances []uint64) ([]mtconnect.Gap, error) {
+	var conds []string
+	var args []any
+	for _, p := range progress {
+		if p.Instance != 0 { // never worked on: no Gap comes after its progress
+			conds = append(conds, `(instance_id = ? AND (epoch > ? OR (epoch = ? AND from_sequence > ?)))`)
+			args = append(args, p.Instance, p.Epoch, p.Epoch, p.Sequence)
+		}
+	}
+	for _, i := range instances {
+		conds = append(conds, `instance_id = ?`)
+		args = append(args, i)
+	}
+	if len(conds) == 0 {
+		return nil, nil
+	}
+	stored, err := s.gapsWhere(strings.Join(conds, " OR ")+` ORDER BY rowid`, args...)
+	return plain(stored), err
+}
+
+// gapsWhere returns the stored Gaps that match cond, which may end with an ORDER BY and LIMIT.
+func (s *Store) gapsWhere(cond string, args ...any) ([]GapArrival, error) {
 	rows, err := s.db.Query(`SELECT rowid, instance_id, epoch, from_sequence, resumed_at, resumed_epoch, missed, reason, detected_at
-		FROM gaps ORDER BY detected_at DESC LIMIT ?`, limit)
+		FROM gaps WHERE `+cond, args...)
 	if err != nil {
 		return nil, err
 	}

@@ -90,14 +90,18 @@ func findNewCycles(store *Store, continuous map[string]bool, limit int) error {
 			machines[o.Device] = true
 		}
 	}
-	stored, err := store.GapArrivals()
+	// Gaps are never deleted, so skip those every machine has already checked
+	checked := int64(math.MaxInt64)
+	for m := range machines {
+		checked = min(checked, progress[m].GapsSeen)
+	}
+	stored, err := store.GapsSince(checked)
 	if err != nil {
 		return err
 	}
-	gaps := make([]mtconnect.Gap, len(stored))
 	var newest int64
-	for i, g := range stored {
-		gaps[i], newest = g.Gap, max(newest, g.Row)
+	for _, g := range stored {
+		newest = max(newest, g.Row)
 	}
 
 	var late []LateGap
@@ -139,10 +143,18 @@ func findNewCycles(store *Store, continuous map[string]bool, limit int) error {
 	var cycles []Cycle
 	if len(arrivals) > 0 {
 		byMachine := map[string][]mtconnect.Observation{}
+		var instances []uint64
 		for _, a := range arrivals {
 			if machines[a.Device] && a.Row > progress[a.Device].After {
 				byMachine[a.Device] = append(byMachine[a.Device], a.Observation)
+				if !slices.Contains(instances, a.InstanceID) {
+					instances = append(instances, a.InstanceID)
+				}
 			}
+		}
+		gaps, err := store.GapsFor(progress, instances)
+		if err != nil {
+			return err
 		}
 		end := arrivals[len(arrivals)-1].Row
 		for m := range machines {
