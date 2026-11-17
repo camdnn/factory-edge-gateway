@@ -714,3 +714,34 @@ func TestFindNewCyclesGapFromStart(t *testing.T) {
 	housekeepEach(t, s, insertGap(s, behind[0]), insert(s, acrossGap))
 	wantCycles(t, s, "[ 10m56s  10m56s]")
 }
+
+// Each machine checks the Gaps it has not yet checked, however far the others
+// have got (#16): here the Mazak has checked the Gap and the Okuma has not.
+func TestFindNewCyclesLateGapUnevenChecks(t *testing.T) {
+	s := openTestStore(t)
+	mazak := []mtconnect.Observation{program(-11*time.Minute, "M1"), parts(-10*time.Minute, "0"), parts(5*time.Minute, "1"), parts(8*time.Hour, "2")}
+	for i := range mazak {
+		mazak[i] = numbered(8, uint64(i+1), mazak[i])
+		mazak[i].Device, mazak[i].DeviceUUID = "MAZAK", "MAZAK"
+	}
+	housekeepEach(t, s, insert(s, slices.Concat(acrossGap, mazak)), insertGap(s, behind[0]))
+	// the Okuma's Cycle across the Gap is corrected; now undo that and let only the Mazak have checked it
+	stored, err := s.GapsSince(0)
+	if err != nil || len(stored) != 1 {
+		t.Fatalf("GapsSince(0) = %+v, %v; want the one Gap", stored, err)
+	}
+	progress, err := s.CycleProgress()
+	if err != nil {
+		t.Fatal(err)
+	}
+	okuma, mz := progress["OKUMA"], progress["MAZAK"]
+	okuma.GapsSeen, mz.GapsSeen = 0, stored[0].Row
+	wrong := Cycle{Machine: "OKUMA", Start: t0.Add(10*time.Minute + 56*time.Second), End: t0.Add(7*time.Hour + 56*time.Minute)}
+	if err := s.SaveCycles(nil, []Cycle{wrong}, map[string]CycleProgress{"OKUMA": okuma, "MAZAK": mz}); err != nil {
+		t.Fatal(err)
+	}
+	wantCycles(t, s, "[ 10m56s M1 7h55m0s  7h45m4s  10m56s]")
+
+	housekeepEach(t, s, nothing)
+	wantCycles(t, s, "[ 10m56s M1 7h55m0s  10m56s]")
+}
