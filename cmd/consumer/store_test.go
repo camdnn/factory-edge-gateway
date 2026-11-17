@@ -530,9 +530,9 @@ func TestStoreKeepsEachEpochApart(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	gaps, err := s.Gaps()
-	if want := []mtconnect.Gap{second, first}; err != nil || !reflect.DeepEqual(gaps, want) {
-		t.Errorf("Gaps = %+v, %v; want %+v", gaps, err, want)
+	gaps, err := s.GapsIn([]uint64{7})
+	if want := []mtconnect.Gap{first, second}; err != nil || !reflect.DeepEqual(gaps, want) {
+		t.Errorf("GapsIn = %+v, %v; want %+v", gaps, err, want)
 	}
 }
 
@@ -580,7 +580,7 @@ func TestOpenStoreAddsEpochs(t *testing.T) {
 	}
 	wantObs := []Arrival{{Row: 2, Observation: ob(2, "1", 10)}, {Row: 3, Observation: ob(3, "2", 20)}}
 	wantGaps := []mtconnect.Gap{{DetectedAt: ts(60), InstanceID: 7, From: 4, ResumedAt: 900, Missed: 896, Reason: mtconnect.GapFellBehind}}
-	wantProgress := map[string]CycleProgress{"OKUMA": {After: 2, Count: 1, Counted: true, Instance: 7, Sequence: 2}}
+	wantProgress := map[string]CycleProgress{"OKUMA": {After: 2, Count: 1, Counted: true, Position: mtconnect.Position{Instance: 7, Sequence: 2}}}
 
 	for open := range 2 { // a second start finds nothing to rebuild
 		s, err := OpenStore(path)
@@ -591,9 +591,9 @@ func TestOpenStoreAddsEpochs(t *testing.T) {
 		if err != nil || !reflect.DeepEqual(obs, wantObs) {
 			t.Errorf("open %d: CycleObservations = %+v, %v; want %+v", open, obs, err, wantObs)
 		}
-		gaps, err := s.Gaps()
+		gaps, err := s.GapsIn([]uint64{7})
 		if err != nil || !reflect.DeepEqual(gaps, wantGaps) {
-			t.Errorf("open %d: Gaps = %+v, %v; want %+v", open, gaps, err, wantGaps)
+			t.Errorf("open %d: GapsIn = %+v, %v; want %+v", open, gaps, err, wantGaps)
 		}
 		progress, err := s.CycleProgress()
 		if err != nil || !reflect.DeepEqual(progress, wantProgress) {
@@ -616,8 +616,8 @@ func TestOpenStoreAddsEpochs(t *testing.T) {
 	if err := s.InsertGap(mtconnect.Gap{DetectedAt: ts(70), InstanceID: 7, Epoch: 1, From: 4, ResumedAt: 1, ResumedEpoch: 2, Reason: mtconnect.GapSequencesBackwards}); err != nil {
 		t.Fatal(err)
 	}
-	if gaps, err := s.Gaps(); err != nil || len(gaps) != 2 {
-		t.Errorf("Gaps = %+v, %v; want the old Gap and the new one", gaps, err)
+	if gaps, err := s.GapsIn([]uint64{7}); err != nil || len(gaps) != 2 {
+		t.Errorf("GapsIn = %+v, %v; want the old Gap and the new one", gaps, err)
 	}
 }
 
@@ -649,24 +649,26 @@ func TestFindNewCyclesBackwardsStartsANewBatch(t *testing.T) {
 	}
 }
 
-// Placing Gaps reads only those in the machines' instances past their progress,
-// and every Gap in an instance housekeeping is about to work through (#16).
-func TestStoreGapsFor(t *testing.T) {
+// Placing Gaps reads every Gap in the instances asked for, in the order stored,
+// and none from other instances.
+func TestStoreGapsIn(t *testing.T) {
 	s := openTestStore(t)
 	gap := func(instance, epoch, from uint64) mtconnect.Gap {
 		return mtconnect.Gap{DetectedAt: t0, InstanceID: instance, Epoch: epoch, From: from, ResumedAt: from + 10, ResumedEpoch: epoch, Reason: mtconnect.GapFellBehind}
 	}
-	passed, ahead, nextEpoch := gap(7, 0, 40), gap(7, 0, 100), gap(7, 1, 10)
+	ahead, passed, nextEpoch := gap(7, 0, 100), gap(7, 0, 40), gap(7, 1, 10)
 	other, working := gap(8, 0, 5), gap(9, 0, 1)
-	for _, g := range []mtconnect.Gap{passed, ahead, nextEpoch, other, working} {
+	for _, g := range []mtconnect.Gap{ahead, other, working, passed, nextEpoch} {
 		if err := s.InsertGap(g); err != nil {
 			t.Fatal(err)
 		}
 	}
-	progress := map[string]CycleProgress{"OKUMA": {Instance: 7, Sequence: 50}}
-	gaps, err := s.GapsFor(progress, []uint64{9})
-	if want := []mtconnect.Gap{ahead, nextEpoch, working}; err != nil || !reflect.DeepEqual(gaps, want) {
-		t.Errorf("GapsFor = %+v, %v; want %+v", gaps, err, want)
+	gaps, err := s.GapsIn([]uint64{7, 9})
+	if want := []mtconnect.Gap{ahead, working, passed, nextEpoch}; err != nil || !reflect.DeepEqual(gaps, want) {
+		t.Errorf("GapsIn = %+v, %v; want %+v", gaps, err, want)
+	}
+	if gaps, err := s.GapsIn(nil); err != nil || len(gaps) != 0 {
+		t.Errorf("GapsIn(nil) = %+v, %v; want none", gaps, err)
 	}
 }
 

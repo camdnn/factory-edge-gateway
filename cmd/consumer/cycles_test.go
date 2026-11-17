@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"testing"
 	"time"
@@ -316,5 +317,21 @@ func TestCycleRowsOnePerMachineAndProgram(t *testing.T) {
 	}
 	if fmt.Sprintf("%+v", got) != fmt.Sprintf("%+v", want) {
 		t.Errorf("rows = %+v\nwant %+v", got, want)
+	}
+}
+
+// Progress stored before Position was a type loads unchanged, and is written back with the same keys.
+func TestCycleProgressJSON(t *testing.T) {
+	stored := `{"count":1,"counted":true,"instance":7,"epoch":2,"sequence":50}`
+	var p CycleProgress
+	if err := json.Unmarshal([]byte(stored), &p); err != nil {
+		t.Fatal(err)
+	}
+	if want := (mtconnect.Position{Instance: 7, Epoch: 2, Sequence: 50}); p.Position != want {
+		t.Errorf("Position = %+v, want %+v", p.Position, want)
+	}
+	written, err := json.Marshal(p)
+	if err != nil || string(written) != stored {
+		t.Errorf("Marshal = %s, %v; want %s", written, err, stored)
 	}
 }

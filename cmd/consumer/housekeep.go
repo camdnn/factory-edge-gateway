@@ -142,17 +142,27 @@ func findNewCycles(store *Store, continuous map[string]bool, limit int) error {
 	}
 	var cycles []Cycle
 	if len(arrivals) > 0 {
-		byMachine := map[string][]mtconnect.Observation{}
+		// between places only Gaps in a progress or observation instance; a machine can move instance part way (#16)
 		var instances []uint64
+		add := func(i uint64) {
+			if !slices.Contains(instances, i) {
+				instances = append(instances, i)
+			}
+		}
+		for _, p := range progress {
+			if p.Instance != 0 { // never worked on: no Gap comes after its progress
+				add(p.Instance)
+			}
+		}
+		byMachine := map[string][]mtconnect.Observation{}
 		for _, a := range arrivals {
 			if machines[a.Device] && a.Row > progress[a.Device].After {
 				byMachine[a.Device] = append(byMachine[a.Device], a.Observation)
-				if !slices.Contains(instances, a.InstanceID) {
-					instances = append(instances, a.InstanceID)
-				}
+				add(a.InstanceID)
 			}
 		}
-		gaps, err := store.GapsFor(progress, instances)
+		// Gaps before a machine's progress are read too: between passes over them
+		gaps, err := store.GapsIn(instances)
 		if err != nil {
 			return err
 		}
