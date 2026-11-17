@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
 # Enabled per clone with: git config core.hooksPath .githooks
-# It checks the working tree, not the staged snapshot; CI checks what was committed.
-exec "$(git rev-parse --show-toplevel)/scripts/check.sh"
+# Checks the staged snapshot in a scratch copy, so unstaged edits neither block nor rescue a commit.
+set -euo pipefail
+dir=$(mktemp -d)
+trap 'rm -rf "$dir"' EXIT
+git checkout-index --all --prefix="$dir/"
+"$dir/scripts/check.sh"

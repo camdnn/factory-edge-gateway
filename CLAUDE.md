@@ -12,6 +12,10 @@ Default vocabulary: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-
 
 Single-context: `GLOSSARY.md` and `docs/adr/` at the repo root. See `docs/agents/domain.md`.
 
+### Commits
+
+Commit straight to `main`.
+
 ### Checks and verification
 
 **Checking** before a commit: `scripts/check.sh`.
