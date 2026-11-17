@@ -446,6 +446,19 @@ func TestFindNewCyclesLateGapOtherInstance(t *testing.T) {
 	wantCycles(t, s, "[ 10m56s  10m56s  10m56s]")
 }
 
+// The agent restarted with lower sequences in a new instance, and housekeeping
+// worked through the new instance's observations before the Gap was stored.
+func TestFindNewCyclesLateGapNextInstance(t *testing.T) {
+	s := openTestStore(t)
+	restarted := []mtconnect.Observation{
+		numbered(8, 3, parts(time.Hour, "3")), // the first part seen after the restart: no Cycle
+		numbered(8, 6, parts(time.Hour+10*time.Minute+56*time.Second, "4")),
+	}
+	g := mtconnect.Gap{InstanceID: 7, From: 102, ResumedAt: 3, Reason: mtconnect.GapAgentRestarted}
+	housekeepEach(t, s, insert(s, slices.Concat(acrossGap[:3], restarted)), insertGap(s, g), nothing)
+	wantCycles(t, s, "[ 10m56s  10m56s]")
+}
+
 // The machine's last observation before the Gap came from an earlier snapshot,
 // so its time is older than the Cycle before it: the times say nothing about
 // where the Gap lies, the agent's numbering does.
