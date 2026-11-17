@@ -69,6 +69,10 @@ The whole path an observation travels, from the MTConnect agent through the edge
 A stretch of observations the edge could not collect because the MTConnect agent restarted or had already discarded them. A gap is always reported, never silent.
 _Avoid_: Data loss, hole, drop
 
+**Epoch**:
+A count the edge keeps within one agent instance. It starts at 0 and goes up by 1 each time the agent's sequence numbers go backwards without a new instance ID. An observation is identified by its instance, epoch and sequence together (ADR 0005).
+_Avoid_: Generation, era
+
 **Pipeline verdict**:
 The pipeline's single health judgement: Healthy, Degraded (observations late or some missed) or Down (nothing arriving).
 _Avoid_: Pipeline status (status belongs to machines), pipeline health
