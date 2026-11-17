@@ -70,12 +70,16 @@ A stretch of observations the edge could not collect because the MTConnect agent
 _Avoid_: Data loss, hole, drop
 
 **Snapshot**:
-The current value of every data item, which the edge fetches from the MTConnect agent (`/current`) to start collecting, including after every Gap. Each observation in it carries the time its value last changed, which can be long before the Gap. So place observations around a Gap by the agent's numbering, never by their times.
+The current value of every data item, which the edge fetches from the MTConnect agent (`/current`) to start collecting, including after every Gap. Each observation in it carries the time its value last changed, which can be long before the Gap. So place observations around a Gap by their Position, never by their times.
 _Avoid_: Current, dump
 
 **Epoch**:
-A count the edge keeps within one agent instance. It starts at 0 and goes up by 1 each time the agent's sequence numbers go backwards without a new instance ID. An observation is identified by its instance, epoch and sequence together (ADR 0005).
+A count the edge keeps within one agent instance. It starts at 0 and goes up by 1 each time the agent's sequence numbers go backwards without a new instance ID. Together with the instance and sequence, it makes up an observation's Position.
 _Avoid_: Generation, era
+
+**Position**:
+Where an observation falls in its agent's numbering: its instance, epoch and sequence together, which identify it (ADR 0005). A Gap starts at the Position of its first missed observation. Positions in one instance are ordered by epoch, then sequence; Positions in different instances have no order.
+_Avoid_: Cursor (the edge's saved place to resume from), offset (Kafka's), sequence alone
 
 **Pipeline verdict**:
 The pipeline's single health judgement: Healthy, Degraded (observations late or some missed) or Down (nothing arriving).
