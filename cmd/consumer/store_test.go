@@ -1,6 +1,7 @@
 package main
 
 import (
+	"database/sql"
 	"fmt"
 	"path/filepath"
 	"reflect"
@@ -366,6 +367,168 @@ func TestFindNewCyclesGapStartsANewBatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	if want := "[ 10m56s  10m56s]"; show(recent) != want {
+		t.Errorf("cycles = %s, want %s", show(recent), want)
+	}
+}
+
+// An agent that numbers sequences again without a new instance reuses sequences the
+// store already holds; the epoch keeps them apart (ADR 0005).
+func TestStoreKeepsEachEpochApart(t *testing.T) {
+	s := openTestStore(t)
+	o := func(epoch, seq uint64) mtconnect.Observation {
+		return mtconnect.Observation{InstanceID: 7, Epoch: epoch, Sequence: seq, Device: "OKUMA", DeviceUUID: "OKUMA",
+			DataItemID: "pc", Category: "Event", Type: "PartCount", Value: fmt.Sprint(seq), Timestamp: t0}
+	}
+	var before, after []mtconnect.Observation
+	for seq := range uint64(10) {
+		before = append(before, o(0, seq+1))
+	}
+	for seq := range uint64(5) {
+		after = append(after, o(1, seq+1))
+	}
+	for _, step := range []struct {
+		obs  []mtconnect.Observation
+		want int64
+	}{{before, 10}, {after, 5}, {after, 0}} { // the last is a Kafka redelivery
+		if n, err := s.Insert(step.obs, t0); err != nil || n != step.want {
+			t.Fatalf("Insert = %d, %v; want %d new", n, err, step.want)
+		}
+	}
+	got, err := s.CycleObservations(0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stored []mtconnect.Observation
+	for _, a := range got {
+		stored = append(stored, a.Observation)
+	}
+	if want := slices.Concat(before, after); !reflect.DeepEqual(stored, want) {
+		t.Errorf("CycleObservations = %+v, want %+v", stored, want)
+	}
+
+	// going backwards twice from the same sequence gives two Gaps
+	first := mtconnect.Gap{DetectedAt: t0, InstanceID: 7, From: 11, ResumedAt: 1, ResumedEpoch: 1, Reason: mtconnect.GapSequencesBackwards}
+	second := mtconnect.Gap{DetectedAt: t0.Add(time.Hour), InstanceID: 7, Epoch: 1, From: 11, ResumedAt: 1, ResumedEpoch: 2, Reason: mtconnect.GapSequencesBackwards}
+	for _, g := range []mtconnect.Gap{first, second, second} {
+		if err := s.InsertGap(g); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gaps, err := s.Gaps()
+	if want := []mtconnect.Gap{second, first}; err != nil || !reflect.DeepEqual(gaps, want) {
+		t.Errorf("Gaps = %+v, %v; want %+v", gaps, err, want)
+	}
+}
+
+// The tables as stored before epochs (ADR 0005), as a consumer's database still holds them.
+const oldSchema = `
+CREATE TABLE observations (
+	instance_id INTEGER NOT NULL, sequence INTEGER NOT NULL,
+	device TEXT, device_uuid TEXT, component TEXT, data_item_id TEXT, name TEXT,
+	category TEXT, type TEXT, sub_type TEXT, value TEXT, ts TEXT,
+	PRIMARY KEY (instance_id, sequence)
+);
+CREATE TABLE gaps (
+	instance_id INTEGER NOT NULL, from_sequence INTEGER NOT NULL,
+	resumed_at INTEGER, missed INTEGER, reason TEXT, detected_at TEXT,
+	PRIMARY KEY (instance_id, from_sequence)
+);
+CREATE TABLE cycle_progress (machine TEXT PRIMARY KEY, after INTEGER NOT NULL, state TEXT NOT NULL);
+CREATE INDEX gaps_detected_at ON gaps (detected_at);
+INSERT INTO observations VALUES
+	(7, 1, 'OKUMA', 'OKUMA', 'c', 'pc', '', 'Event', 'PartCount', '', '0', '2026-11-10T04:00:00.000000Z'),
+	(7, 2, 'OKUMA', 'OKUMA', 'c', 'pc', '', 'Event', 'PartCount', '', '1', '2026-11-10T04:10:00.000000Z'),
+	(7, 3, 'OKUMA', 'OKUMA', 'c', 'pc', '', 'Event', 'PartCount', '', '2', '2026-11-10T04:20:00.000000Z');
+DELETE FROM observations WHERE sequence = 1; -- pruned, so arrival order starts at row 2
+INSERT INTO gaps VALUES (7, 4, 900, 896, 'fell behind the agent''s buffer', '2026-11-10T05:00:00.000000Z');
+INSERT INTO cycle_progress VALUES ('OKUMA', 2, '{"count":1,"counted":true,"instance":7,"sequence":2}');`
+
+// A consumer upgraded in place rebuilds its tables with epochs and loses nothing,
+// not even the arrival order that Cycle progress points into.
+func TestOpenStoreAddsEpochs(t *testing.T) {
+	// the store can't write its old shape, so the old database is made directly; every read goes through the store
+	path := filepath.Join(t.TempDir(), "old.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(oldSchema); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+
+	ts := func(min int) time.Time { return time.Date(2026, 11, 10, 4, min, 0, 0, time.UTC) }
+	ob := func(seq uint64, value string, min int) mtconnect.Observation {
+		return mtconnect.Observation{InstanceID: 7, Sequence: seq, Device: "OKUMA", DeviceUUID: "OKUMA", Component: "c",
+			DataItemID: "pc", Category: "Event", Type: "PartCount", Value: value, Timestamp: ts(min)}
+	}
+	wantObs := []Arrival{{Row: 2, Observation: ob(2, "1", 10)}, {Row: 3, Observation: ob(3, "2", 20)}}
+	wantGaps := []mtconnect.Gap{{DetectedAt: ts(60), InstanceID: 7, From: 4, ResumedAt: 900, Missed: 896, Reason: mtconnect.GapFellBehind}}
+	wantProgress := map[string]CycleProgress{"OKUMA": {After: 2, Count: 1, Counted: true, Instance: 7, Sequence: 2}}
+
+	for open := range 2 { // a second start finds nothing to rebuild
+		s, err := OpenStore(path)
+		if err != nil {
+			t.Fatalf("open %d: %v", open, err)
+		}
+		obs, err := s.CycleObservations(0, 100)
+		if err != nil || !reflect.DeepEqual(obs, wantObs) {
+			t.Errorf("open %d: CycleObservations = %+v, %v; want %+v", open, obs, err, wantObs)
+		}
+		gaps, err := s.Gaps()
+		if err != nil || !reflect.DeepEqual(gaps, wantGaps) {
+			t.Errorf("open %d: Gaps = %+v, %v; want %+v", open, gaps, err, wantGaps)
+		}
+		progress, err := s.CycleProgress()
+		if err != nil || !reflect.DeepEqual(progress, wantProgress) {
+			t.Errorf("open %d: CycleProgress = %+v, %v; want %+v", open, progress, err, wantProgress)
+		}
+		s.Close()
+	}
+
+	// the rebuilt tables take the new keys
+	s, err := OpenStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	reused := ob(2, "1", 30)
+	reused.Epoch = 1
+	if n, err := s.Insert([]mtconnect.Observation{reused}, t0); err != nil || n != 1 {
+		t.Errorf("Insert in epoch 1 = %d, %v; want 1 new", n, err)
+	}
+	if err := s.InsertGap(mtconnect.Gap{DetectedAt: ts(70), InstanceID: 7, Epoch: 1, From: 4, ResumedAt: 1, ResumedEpoch: 2, Reason: mtconnect.GapSequencesBackwards}); err != nil {
+		t.Fatal(err)
+	}
+	if gaps, err := s.Gaps(); err != nil || len(gaps) != 2 {
+		t.Errorf("Gaps = %+v, %v; want the old Gap and the new one", gaps, err)
+	}
+}
+
+// After sequences go backwards, the store keeps the reused sequences and Cycle
+// progress remembers which epoch it stopped in, across calls.
+func TestFindNewCyclesBackwardsStartsANewBatch(t *testing.T) {
+	s := openTestStore(t)
+	steps := []func() error{
+		func() error { _, err := s.Insert(acrossBackwards[:3], t0); return err },
+		func() error { return s.InsertGap(backwards[0]) },
+		func() error { _, err := s.Insert(acrossBackwards[3:5], t0); return err },
+		func() error { _, err := s.Insert(acrossBackwards[5:], t0); return err },
+	}
+	for _, step := range steps {
+		if err := step(); err != nil {
+			t.Fatal(err)
+		}
+		if err := findNewCycles(s, nil, 100); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	recent, _, err := s.RecentCycles(10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "[ 10m56s  10m56s  10m56s  10m56s]"; show(recent) != want {
 		t.Errorf("cycles = %s, want %s", show(recent), want)
 	}
 }

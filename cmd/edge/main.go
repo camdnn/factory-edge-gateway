@@ -80,7 +80,7 @@ func main() {
 			if err != nil {
 				log.Fatal(err)
 			}
-			key := fmt.Sprintf("%d-%d", gap.InstanceID, gap.From)
+			key := fmt.Sprintf("%d-%d-%d", gap.InstanceID, gap.Epoch, gap.From)
 			records = append(records, &kgo.Record{Topic: *gapsTopic, Key: []byte(key), Value: value})
 		}
 		// in sequence order, so each partition's newest record is its highest sequence

@@ -34,6 +34,7 @@ type CycleProgress struct {
 	Program string    `json:"program,omitempty"` // the Program in effect
 
 	Instance uint64 `json:"instance,omitempty"` // the agent instance of the last observation worked through
+	Epoch    uint64 `json:"epoch,omitempty"`    // its epoch
 	Sequence uint64 `json:"sequence,omitempty"` // and its sequence, to tell whether a Gap came after it
 
 	Interrupted bool            `json:"interrupted,omitempty"` // the Cycle in progress has seen a stop or Fault
@@ -56,7 +57,7 @@ func findCycles(obs []mtconnect.Observation, gaps []mtconnect.Gap, p CycleProgre
 		if slices.ContainsFunc(gaps, func(g mtconnect.Gap) bool { return between(g, p, o) }) {
 			p.Last = time.Time{}
 		}
-		p.Instance, p.Sequence = o.InstanceID, o.Sequence
+		p.Instance, p.Epoch, p.Sequence = o.InstanceID, o.Epoch, o.Sequence
 		switch {
 		case o.Category == "Condition":
 			if level(o.Value) == "Fault" {
@@ -108,11 +109,11 @@ func findCycles(obs []mtconnect.Observation, gaps []mtconnect.Gap, p CycleProgre
 // through and o. A Gap is placed by the agent's numbering, not by arrival,
 // because it reaches the consumer on its own Kafka topic.
 func between(g mtconnect.Gap, p CycleProgress, o mtconnect.Observation) bool {
-	if p.Instance != g.InstanceID || p.Sequence >= g.From {
+	if p.Instance != g.InstanceID || p.Epoch != g.Epoch || p.Sequence >= g.From {
 		return false
 	}
-	// a restart starts a new instance; falling behind resumes the same one past the missed sequences
-	return o.InstanceID != g.InstanceID || o.Sequence >= g.From
+	// a restart moves to another instance, going backwards to a later epoch (ADR 0005), falling behind past From
+	return o.InstanceID != g.InstanceID || o.Epoch > g.Epoch || o.Sequence >= g.From
 }
 
 // CycleRow is one machine and Program in the board's Cycle list.

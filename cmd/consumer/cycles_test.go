@@ -206,6 +206,34 @@ func TestCyclesGapStartsANewBatch(t *testing.T) {
 	}
 }
 
+// An agent that numbers sequences again without a new instance: the edge moves to a
+// new epoch (ADR 0005), so the Gap starts a new batch at once, not when the new
+// numbering climbs past where the old one stopped.
+var backwards = []mtconnect.Gap{{InstanceID: 7, From: 102, ResumedAt: 5, ResumedEpoch: 1, Reason: mtconnect.GapSequencesBackwards}}
+var acrossBackwards = []mtconnect.Observation{
+	numbered(7, 99, parts(-10*time.Minute, "0")),
+	numbered(7, 100, parts(0, "1")),
+	numbered(7, 101, parts(10*time.Minute+56*time.Second, "2")),
+	// the Gap: numbering starts again in epoch 1
+	epoch(1, numbered(7, 4, parts(time.Hour, "3"))), // from the snapshot after the Gap: no Cycle
+	epoch(1, numbered(7, 50, parts(time.Hour+10*time.Minute+56*time.Second, "4"))),
+	epoch(1, numbered(7, 102, parts(time.Hour+21*time.Minute+52*time.Second, "5"))), // past the Gap's From: still the same batch
+	epoch(1, numbered(7, 150, parts(time.Hour+32*time.Minute+48*time.Second, "6"))),
+}
+
+func TestCyclesBackwardsStartsANewBatch(t *testing.T) {
+	got, _ := findCycles(acrossBackwards, backwards, CycleProgress{}, false)
+	if want := "[ 10m56s  10m56s  10m56s  10m56s]"; show(got) != want {
+		t.Errorf("cycles = %s, want %s", show(got), want)
+	}
+}
+
+// epoch places o in an epoch of its agent instance.
+func epoch(e uint64, o mtconnect.Observation) mtconnect.Observation {
+	o.Epoch = e
+	return o
+}
+
 // An agent restart caught at once misses no observations the edge can count, but parts may still go unseen.
 func TestCyclesAgentRestartStartsANewBatch(t *testing.T) {
 	gaps := []mtconnect.Gap{

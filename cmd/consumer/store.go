@@ -19,10 +19,11 @@ const tsFormat = "2006-01-02T15:04:05.000000Z07:00"
 const schema = `
 CREATE TABLE IF NOT EXISTS observations (
 	instance_id  INTEGER NOT NULL,
+	epoch        INTEGER NOT NULL, -- ADR 0005
 	sequence     INTEGER NOT NULL,
 	device       TEXT, device_uuid TEXT, component TEXT, data_item_id TEXT, name TEXT,
 	category     TEXT, type TEXT, sub_type TEXT, value TEXT, ts TEXT,
-	PRIMARY KEY (instance_id, sequence) -- an agent's sequence numbers are unique, so replays are no-ops
+	PRIMARY KEY (instance_id, epoch, sequence) -- unique per observation, so replays are no-ops
 );
 CREATE TABLE IF NOT EXISTS latest (
 	device_uuid  TEXT NOT NULL,
@@ -32,9 +33,10 @@ CREATE TABLE IF NOT EXISTS latest (
 );
 CREATE TABLE IF NOT EXISTS gaps (
 	instance_id   INTEGER NOT NULL,
+	epoch         INTEGER NOT NULL,
 	from_sequence INTEGER NOT NULL,
-	resumed_at    INTEGER, missed INTEGER, reason TEXT, detected_at TEXT,
-	PRIMARY KEY (instance_id, from_sequence) -- the edge may re-send the same gap
+	resumed_at    INTEGER, resumed_epoch INTEGER NOT NULL, missed INTEGER, reason TEXT, detected_at TEXT,
+	PRIMARY KEY (instance_id, epoch, from_sequence) -- the edge may re-send the same gap
 );
 CREATE TABLE IF NOT EXISTS status_changes (
 	machine TEXT NOT NULL, status TEXT NOT NULL, reason TEXT, at TEXT NOT NULL
@@ -66,11 +68,63 @@ func OpenStore(path string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	if _, err := db.Exec(schema); err != nil {
+	if err := migrate(db); err != nil {
 		db.Close()
 		return nil, err
 	}
 	return &Store{db: db}, nil
+}
+
+// rebuilds copies each table stored before epochs (ADR 0005) into its new
+// shape, with epoch 0. Observations keep their rowids: Cycle progress and Count
+// rely on arrival order.
+var rebuilds = []struct{ table, copy string }{
+	{"observations", `INSERT INTO observations (rowid, instance_id, epoch, sequence, device, device_uuid, component, data_item_id, name, category, type, sub_type, value, ts)
+		SELECT rowid, instance_id, 0, sequence, device, device_uuid, component, data_item_id, name, category, type, sub_type, value, ts FROM old_observations`},
+	{"gaps", `INSERT INTO gaps (instance_id, epoch, from_sequence, resumed_at, resumed_epoch, missed, reason, detected_at)
+		SELECT instance_id, 0, from_sequence, resumed_at, 0, missed, reason, detected_at FROM old_gaps`},
+}
+
+// migrate creates any missing tables, first rebuilding those stored before epochs:
+// SQLite can't change a primary key in place.
+func migrate(db *sql.DB) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var stale []int
+	for i, b := range rebuilds {
+		var columns, epochs int
+		if err := tx.QueryRow(`SELECT COUNT(*), COUNT(*) FILTER (WHERE name = 'epoch') FROM pragma_table_info(?)`,
+			b.table).Scan(&columns, &epochs); err != nil {
+			return err
+		}
+		if columns > 0 && epochs == 0 {
+			if _, err := tx.Exec(`ALTER TABLE ` + b.table + ` RENAME TO old_` + b.table); err != nil {
+				return err
+			}
+			stale = append(stale, i)
+		}
+	}
+	if _, err := tx.Exec(schema); err != nil {
+		return err
+	}
+	for _, i := range stale {
+		if _, err := tx.Exec(rebuilds[i].copy); err != nil {
+			return fmt.Errorf("rebuild %s with epochs: %w", rebuilds[i].table, err)
+		}
+		if _, err := tx.Exec(`DROP TABLE old_` + rebuilds[i].table); err != nil {
+			return err
+		}
+	}
+	if len(stale) > 0 {
+		// indexes went with the old tables, and their names kept the new ones from being made
+		if _, err := tx.Exec(schema); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func (s *Store) Close() error { return s.db.Close() }
@@ -87,8 +141,8 @@ func (s *Store) Insert(obs []mtconnect.Observation, receivedAt time.Time) (int64
 	var inserted int64
 	for _, o := range obs {
 		ts := o.Timestamp.UTC().Format(tsFormat)
-		res, err := tx.Exec(`INSERT OR IGNORE INTO observations VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
-			o.InstanceID, o.Sequence, o.Device, o.DeviceUUID, o.Component, o.DataItemID, o.Name,
+		res, err := tx.Exec(`INSERT OR IGNORE INTO observations VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			o.InstanceID, o.Epoch, o.Sequence, o.Device, o.DeviceUUID, o.Component, o.DataItemID, o.Name,
 			o.Category, o.Type, o.SubType, o.Value, ts)
 		if err != nil {
 			return 0, err
@@ -198,8 +252,8 @@ func (s *Store) Prune(cutoff time.Time) (int64, error) {
 
 // InsertGap stores a gap event; a re-sent copy of the same gap is ignored.
 func (s *Store) InsertGap(g mtconnect.Gap) error {
-	_, err := s.db.Exec(`INSERT OR IGNORE INTO gaps VALUES (?,?,?,?,?,?)`,
-		g.InstanceID, g.From, g.ResumedAt, g.Missed, string(g.Reason), g.DetectedAt.UTC().Format(tsFormat))
+	_, err := s.db.Exec(`INSERT OR IGNORE INTO gaps VALUES (?,?,?,?,?,?,?,?)`,
+		g.InstanceID, g.Epoch, g.From, g.ResumedAt, g.ResumedEpoch, g.Missed, string(g.Reason), g.DetectedAt.UTC().Format(tsFormat))
 	return err
 }
 
@@ -216,7 +270,7 @@ func (s *Store) LastGap() (*mtconnect.Gap, error) {
 func (s *Store) Gaps() ([]mtconnect.Gap, error) { return s.gaps(-1) } // a negative LIMIT is no limit in SQLite
 
 func (s *Store) gaps(limit int) ([]mtconnect.Gap, error) {
-	rows, err := s.db.Query(`SELECT instance_id, from_sequence, resumed_at, missed, reason, detected_at
+	rows, err := s.db.Query(`SELECT instance_id, epoch, from_sequence, resumed_at, resumed_epoch, missed, reason, detected_at
 		FROM gaps ORDER BY detected_at DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, err
@@ -226,7 +280,7 @@ func (s *Store) gaps(limit int) ([]mtconnect.Gap, error) {
 	for rows.Next() {
 		var g mtconnect.Gap
 		var reason, ts string
-		if err := rows.Scan(&g.InstanceID, &g.From, &g.ResumedAt, &g.Missed, &reason, &ts); err != nil {
+		if err := rows.Scan(&g.InstanceID, &g.Epoch, &g.From, &g.ResumedAt, &g.ResumedEpoch, &g.Missed, &reason, &ts); err != nil {
 			return nil, err
 		}
 		g.Reason = mtconnect.GapReason(reason)
@@ -344,7 +398,7 @@ type Arrival struct {
 // reads (part counts, Programs, Run states, Conditions and emergency stops), in
 // arrival order after row after.
 func (s *Store) CycleObservations(after int64, limit int) ([]Arrival, error) {
-	rows, err := s.db.Query(`SELECT rowid, instance_id, sequence, device, device_uuid, component, data_item_id, name, category, type, sub_type, value, ts
+	rows, err := s.db.Query(`SELECT rowid, instance_id, epoch, sequence, device, device_uuid, component, data_item_id, name, category, type, sub_type, value, ts
 		FROM observations
 		WHERE rowid > ? AND (type IN ('PartCount', 'Program', 'Execution', 'EmergencyStop') OR category = 'Condition')
 		ORDER BY rowid LIMIT ?`, after, limit)
@@ -356,7 +410,7 @@ func (s *Store) CycleObservations(after int64, limit int) ([]Arrival, error) {
 	for rows.Next() {
 		var a Arrival
 		var ts string
-		if err := rows.Scan(&a.Row, &a.InstanceID, &a.Sequence, &a.Device, &a.DeviceUUID, &a.Component, &a.DataItemID, &a.Name,
+		if err := rows.Scan(&a.Row, &a.InstanceID, &a.Epoch, &a.Sequence, &a.Device, &a.DeviceUUID, &a.Component, &a.DataItemID, &a.Name,
 			&a.Category, &a.Type, &a.SubType, &a.Value, &ts); err != nil {
 			return nil, err
 		}

@@ -18,7 +18,10 @@ type Header struct {
 
 // Observation is one data item value reported by a real agent.
 type Observation struct {
-	InstanceID uint64    `json:"instance_id"`
+	InstanceID uint64 `json:"instance_id"`
+	// Epoch goes up each time the agent numbers sequences again without a new
+	// instance, so (InstanceID, Epoch, Sequence) is unique (ADR 0005)
+	Epoch      uint64    `json:"epoch,omitempty"`
 	Sequence   uint64    `json:"sequence"`
 	Device     string    `json:"device"`
 	DeviceUUID string    `json:"device_uuid"`

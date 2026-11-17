@@ -48,7 +48,7 @@ func TestClientNext(t *testing.T) {
 			t.Fatal(err)
 		}
 		gapOK := (gap == nil) == (wantGap == nil) && (gap == nil || *gap == *wantGap)
-		if agent.lastPath != wantPath || !gapOK || next != want || len(obs) != 1 {
+		if agent.lastPath != wantPath || !gapOK || next != want || len(obs) != 1 || obs[0].Epoch != want.Epoch {
 			t.Fatalf("Next(%+v) = %+v gap=%+v obs=%d via %s; want %+v gap=%+v via %s",
 				cur, next, gap, len(obs), agent.lastPath, want, wantGap, wantPath)
 		}
@@ -75,10 +75,26 @@ func TestClientNext(t *testing.T) {
 		&Gap{InstanceID: 7, From: 400, ResumedAt: 500, Missed: 0, Reason: GapAgentRestarted},
 		Cursor{InstanceID: 8, Next: 500})
 
-	// a misbehaving agent's sequences go backwards without a restart: the missed count
-	// must not wrap around to an enormous number
+	// a misbehaving agent's sequences go backwards without a restart: a new epoch keeps
+	// the reused sequences apart from the old ones, and the missed count must not wrap around
 	agent.first, agent.next = 1, 100
+	cur = step(cur, "/current",
+		&Gap{InstanceID: 8, From: 500, ResumedAt: 100, ResumedEpoch: 1, Missed: 0, Reason: GapSequencesBackwards},
+		Cursor{InstanceID: 8, Epoch: 1, Next: 100})
+
+	// reading on carries the epoch
+	agent.next = 120
+	cur = step(cur, "/sample", nil, Cursor{InstanceID: 8, Epoch: 1, Next: 120})
+
+	// going backwards again moves to the next epoch
+	agent.next = 50
+	cur = step(cur, "/current",
+		&Gap{InstanceID: 8, Epoch: 1, From: 120, ResumedAt: 50, ResumedEpoch: 2, Reason: GapSequencesBackwards},
+		Cursor{InstanceID: 8, Epoch: 2, Next: 50})
+
+	// a new instance starts again at epoch 0
+	agent.instance, agent.next = 9, 30
 	step(cur, "/current",
-		&Gap{InstanceID: 8, From: 500, ResumedAt: 100, Missed: 0, Reason: GapFellBehind},
-		Cursor{InstanceID: 8, Next: 100})
+		&Gap{InstanceID: 8, Epoch: 2, From: 50, ResumedAt: 30, Reason: GapAgentRestarted},
+		Cursor{InstanceID: 9, Next: 30})
 }

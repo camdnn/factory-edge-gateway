@@ -24,13 +24,14 @@ var errNotObservation = errors.New("newest record is not an observation")
 // The newest agent instance is the one with the highest instance ID (agents set
 // it from their start time), never the edge's clock, which can be wrong after
 // the Pi reboots. Each partition's newest record is its highest sequence because
-// the edge produces every batch in sequence order.
+// the edge produces every batch in sequence order. Within an instance the newest
+// epoch wins, because sequences in it may be lower than in the one before (ADR 0005).
 func recoverCursor(tails []mtconnect.Observation) (cur mtconnect.Cursor, ok bool) {
 	for _, o := range tails {
 		switch {
-		case o.InstanceID > cur.InstanceID:
-			cur = mtconnect.Cursor{InstanceID: o.InstanceID, Next: o.Sequence + 1}
-		case o.InstanceID == cur.InstanceID && o.Sequence+1 > cur.Next:
+		case o.InstanceID > cur.InstanceID || o.InstanceID == cur.InstanceID && o.Epoch > cur.Epoch:
+			cur = mtconnect.Cursor{InstanceID: o.InstanceID, Epoch: o.Epoch, Next: o.Sequence + 1}
+		case o.InstanceID == cur.InstanceID && o.Epoch == cur.Epoch && o.Sequence+1 > cur.Next:
 			cur.Next = o.Sequence + 1
 		}
 	}
