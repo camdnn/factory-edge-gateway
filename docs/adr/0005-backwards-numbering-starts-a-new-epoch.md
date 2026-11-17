@@ -5,7 +5,7 @@ An MTConnect agent should get a new instance ID whenever it restarts. An agent t
 - Each observation is identified by `(instance_id, epoch, sequence)`. That is its storage key, and the epoch is part of every Kafka observation record.
 - The edge reports this case as its own Gap reason, `sequences went backwards`, rather than `fell behind the agent's buffer`.
 - A Gap carries the epoch it left from and the epoch it resumed in. Gaps are stored keyed by `(instance_id, epoch, from_sequence)`.
-- A Gap lies between two observations when the earlier one is in the Gap's instance and epoch, before its first missed sequence, and the later one is at or past that sequence, or in a later epoch or another instance.
+- A Gap lies between two observations when the earlier one is in the Gap's instance, in an earlier epoch or in the Gap's epoch before its first missed sequence, and the later one is in the Gap's epoch at or past that sequence, or in a later epoch or another instance.
 - The epoch is part of the edge's saved cursor. The edge can also rebuild it from the newest Kafka records, so it survives an edge restart.
 - When the consumer starts on a database stored without epochs, it rebuilds those tables and gives existing rows epoch 0.
 

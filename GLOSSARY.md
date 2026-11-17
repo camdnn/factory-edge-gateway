@@ -66,8 +66,12 @@ _Avoid_: Mode, test case
 The whole path an observation travels, from the MTConnect agent through the edge, Kafka and the consumer to the status board.
 
 **Gap**:
-A stretch of observations the edge could not collect because the MTConnect agent restarted or had already discarded them. A gap is always reported, never silent.
+A stretch of observations the edge could not collect because the MTConnect agent restarted or had already discarded them. A gap is always reported, never silent. A Gap is **late** for a machine when the consumer stores it after housekeeping has already worked through that machine's first observation past it (ADR 0006).
 _Avoid_: Data loss, hole, drop
+
+**Snapshot**:
+The current value of every data item, which the edge fetches from the MTConnect agent (`/current`) to start collecting, including after every Gap. Each observation in it carries the time its value last changed, which can be long before the Gap. So place observations around a Gap by the agent's numbering, never by their times.
+_Avoid_: Current, dump
 
 **Epoch**:
 A count the edge keeps within one agent instance. It starts at 0 and goes up by 1 each time the agent's sequence numbers go backwards without a new instance ID. An observation is identified by its instance, epoch and sequence together (ADR 0005).

@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -263,24 +265,41 @@ func (s *Store) LastGap() (*mtconnect.Gap, error) {
 	if err != nil || len(gaps) == 0 {
 		return nil, err
 	}
-	return &gaps[0], nil
+	return &gaps[0].Gap, nil
 }
 
 // Gaps returns every Gap ever stored, newest first.
-func (s *Store) Gaps() ([]mtconnect.Gap, error) { return s.gaps(-1) } // a negative LIMIT is no limit in SQLite
+func (s *Store) Gaps() ([]mtconnect.Gap, error) {
+	stored, err := s.GapArrivals()
+	var out []mtconnect.Gap
+	for _, g := range stored {
+		out = append(out, g.Gap)
+	}
+	return out, err
+}
 
-func (s *Store) gaps(limit int) ([]mtconnect.Gap, error) {
-	rows, err := s.db.Query(`SELECT instance_id, epoch, from_sequence, resumed_at, resumed_epoch, missed, reason, detected_at
+// GapArrival is a stored Gap with its place in the order Gaps were stored.
+type GapArrival struct {
+	Row int64
+	mtconnect.Gap
+}
+
+// GapArrivals returns every Gap ever stored, newest first, with its place in
+// the order Gaps were stored.
+func (s *Store) GapArrivals() ([]GapArrival, error) { return s.gaps(-1) } // a negative LIMIT is no limit in SQLite
+
+func (s *Store) gaps(limit int) ([]GapArrival, error) {
+	rows, err := s.db.Query(`SELECT rowid, instance_id, epoch, from_sequence, resumed_at, resumed_epoch, missed, reason, detected_at
 		FROM gaps ORDER BY detected_at DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []mtconnect.Gap
+	var out []GapArrival
 	for rows.Next() {
-		var g mtconnect.Gap
+		var g GapArrival
 		var reason, ts string
-		if err := rows.Scan(&g.InstanceID, &g.Epoch, &g.From, &g.ResumedAt, &g.ResumedEpoch, &g.Missed, &reason, &ts); err != nil {
+		if err := rows.Scan(&g.Row, &g.InstanceID, &g.Epoch, &g.From, &g.ResumedAt, &g.ResumedEpoch, &g.Missed, &reason, &ts); err != nil {
 			return nil, err
 		}
 		g.Reason = mtconnect.GapReason(reason)
@@ -290,6 +309,61 @@ func (s *Store) gaps(limit int) ([]mtconnect.Gap, error) {
 		out = append(out, g)
 	}
 	return out, rows.Err()
+}
+
+// Late reports whether Gap g is late for machine: housekeeping has worked
+// through, up to row upTo, the machine's first stored observation past the Gap
+// (ADR 0006). If so, parts holds the agent times of the machine's part count
+// increases past the Gap, up to upTo.
+func (s *Store) Late(machine string, g mtconnect.Gap, upTo int64) (parts []time.Time, late bool, err error) {
+	// before and past the Gap as between places them, by the agent's numbering
+	before := `instance_id = ? AND (epoch < ? OR (epoch = ? AND sequence < ?)) AND device = ?`
+	beforeArgs := []any{g.InstanceID, g.Epoch, g.Epoch, g.From, machine}
+	var row int64
+	err = s.db.QueryRow(`SELECT rowid FROM observations WHERE `+before+` ORDER BY epoch DESC, sequence DESC LIMIT 1`, beforeArgs...).Scan(&row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	past := `rowid > ? AND rowid <= ? AND device = ? AND (instance_id != ? OR epoch > ? OR (epoch = ? AND sequence >= ?))`
+	pastArgs := []any{row, upTo, machine, g.InstanceID, g.Epoch, g.Epoch, g.From}
+	if err = s.db.QueryRow(`SELECT EXISTS (SELECT 1 FROM observations WHERE `+past+`)`, pastArgs...).Scan(&late); err != nil || !late {
+		return nil, false, err
+	}
+
+	var prev int64
+	err = s.db.QueryRow(`SELECT value FROM observations WHERE `+before+` AND type = 'PartCount' AND value GLOB '[0-9]*'
+		ORDER BY epoch DESC, sequence DESC LIMIT 1`, beforeArgs...).Scan(&prev)
+	counted := err == nil
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return nil, false, err
+	}
+	rows, err := s.db.Query(`SELECT value, ts FROM observations WHERE `+past+` AND type = 'PartCount' ORDER BY rowid`, pastArgs...)
+	if err != nil {
+		return nil, false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var value, ts string
+		if err := rows.Scan(&value, &ts); err != nil {
+			return nil, false, err
+		}
+		n, err := strconv.ParseInt(value, 10, 64)
+		if err != nil {
+			continue // UNAVAILABLE says nothing about parts made
+		}
+		if counted && n > prev {
+			at, err := time.Parse(tsFormat, ts)
+			if err != nil {
+				return nil, false, fmt.Errorf("part count of %s: %w", machine, err)
+			}
+			parts = append(parts, at)
+		}
+		prev, counted = n, true
+	}
+	return parts, true, rows.Err()
 }
 
 // RecordStatuses stores each machine whose status differs from the last one
@@ -360,7 +434,7 @@ func (s *Store) RecentEvents(limit int) ([]Event, error) {
 	}
 	events := make([]Event, 0, 2*limit)
 	for i := range gaps {
-		events = append(events, Event{At: gaps[i].DetectedAt, Kind: "gap", Gap: &gaps[i]})
+		events = append(events, Event{At: gaps[i].DetectedAt, Kind: "gap", Gap: &gaps[i].Gap})
 	}
 
 	rows, err := s.db.Query(`SELECT machine, status, reason, at FROM status_changes ORDER BY at DESC LIMIT ?`, limit)
@@ -445,14 +519,39 @@ func (s *Store) CycleProgress() (map[string]CycleProgress, error) {
 	return out, rows.Err()
 }
 
-// SaveCycles stores new Cycles and each machine's progress together, so a
-// restart neither loses nor repeats a Cycle. A Cycle already stored is ignored.
-func (s *Store) SaveCycles(cycles []Cycle, progress map[string]CycleProgress) error {
+// LateGap is a Gap stored after housekeeping had worked past it on Machine
+// (ADR 0006). Parts are the agent times of the machine's part count increases
+// past the Gap that housekeeping has worked through.
+type LateGap struct {
+	Machine string
+	Parts   []time.Time
+}
+
+// SaveCycles deletes the Cycle spanning each late Gap, then stores new Cycles
+// and each machine's progress, all together, so a restart neither loses nor
+// repeats a Cycle or a correction. A Cycle already stored is ignored.
+func (s *Store) SaveCycles(late []LateGap, cycles []Cycle, progress map[string]CycleProgress) error {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
+	for _, g := range late {
+		if len(g.Parts) == 0 {
+			continue
+		}
+		args := []any{g.Machine}
+		for range 2 {
+			for _, at := range g.Parts {
+				args = append(args, at.UTC().Format(tsFormat))
+			}
+		}
+		in := strings.Repeat(",?", len(g.Parts))[1:]
+		// the spanning Cycle ends at a part past the Gap and starts at one before it
+		if _, err := tx.Exec(`DELETE FROM cycles WHERE machine = ? AND end IN (`+in+`) AND start NOT IN (`+in+`)`, args...); err != nil {
+			return err
+		}
+	}
 	for _, c := range cycles {
 		if _, err := tx.Exec(`INSERT OR IGNORE INTO cycles VALUES (?,?,?,?,?)`, c.Machine, c.Program,
 			c.Start.UTC().Format(tsFormat), c.End.UTC().Format(tsFormat), c.Interrupted); err != nil {

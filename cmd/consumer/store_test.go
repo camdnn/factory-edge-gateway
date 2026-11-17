@@ -226,10 +226,10 @@ func TestStoreCyclesAndProgressRoundTrip(t *testing.T) {
 	if got, err := s.CycleProgress(); err != nil || len(got) != 0 {
 		t.Fatalf("CycleProgress on empty store = %v, %v; want none", got, err)
 	}
-	if err := s.SaveCycles(cycles, map[string]CycleProgress{"OKUMA": progress}); err != nil {
+	if err := s.SaveCycles(nil, cycles, map[string]CycleProgress{"OKUMA": progress}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SaveCycles(cycles[1:], map[string]CycleProgress{"OKUMA": progress}); err != nil { // saved again after a crash
+	if err := s.SaveCycles(nil, cycles[1:], map[string]CycleProgress{"OKUMA": progress}); err != nil { // saved again after a crash
 		t.Fatal(err)
 	}
 
@@ -261,7 +261,7 @@ func TestStoreRecentCyclesPerProgram(t *testing.T) {
 			Cycle{Machine: "OKUMA", Program: "TRAN", Start: start, End: start.Add(time.Duration(17+i) * time.Second)},
 			Cycle{Machine: "SIM", Program: "TRAN", Start: start, End: start.Add(20 * time.Second), Interrupted: i == 0})
 	}
-	if err := s.SaveCycles(cycles, nil); err != nil {
+	if err := s.SaveCycles(nil, cycles, nil); err != nil {
 		t.Fatal(err)
 	}
 	recent, counts, err := s.RecentCycles(2)
@@ -368,6 +368,122 @@ func TestFindNewCyclesGapStartsANewBatch(t *testing.T) {
 	}
 	if want := "[ 10m56s  10m56s]"; show(recent) != want {
 		t.Errorf("cycles = %s, want %s", show(recent), want)
+	}
+}
+
+// housekeepEach runs each step, then housekeeping, in turn.
+func housekeepEach(t *testing.T, s *Store, steps ...func() error) {
+	t.Helper()
+	for _, step := range steps {
+		if err := step(); err != nil {
+			t.Fatal(err)
+		}
+		if err := findNewCycles(s, nil, 100); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// wantCycles checks the stored Cycles, newest first, as show writes them.
+func wantCycles(t *testing.T, s *Store, want string) {
+	t.Helper()
+	recent, _, err := s.RecentCycles(10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if show(recent) != want {
+		t.Errorf("cycles = %s, want %s", show(recent), want)
+	}
+}
+
+func insert(s *Store, obs []mtconnect.Observation) func() error {
+	return func() error { _, err := s.Insert(obs, t0); return err }
+}
+func insertGap(s *Store, g mtconnect.Gap) func() error { return func() error { return s.InsertGap(g) } }
+func nothing() error                                   { return nil }
+
+// The Gap arrives in a later poll than the observations after it, and
+// housekeeping has already worked through them (#17).
+func TestFindNewCyclesLateGap(t *testing.T) {
+	s := openTestStore(t)
+	housekeepEach(t, s, insert(s, acrossGap), insertGap(s, behind[0]), nothing)
+	wantCycles(t, s, "[ 10m56s  10m56s]")
+}
+
+// Housekeeping has passed the Gap, but not yet the first part after it, when the
+// Gap is stored: the Cycle still in progress must not span it (#17).
+func TestFindNewCyclesLateGapBeforePart(t *testing.T) {
+	s := openTestStore(t)
+	passed := append(slices.Clone(acrossGap[:3]), numbered(7, 849, run(7*time.Hour+55*time.Minute, "ACTIVE")))
+	housekeepEach(t, s, insert(s, passed), insertGap(s, behind[0]), insert(s, acrossGap[3:]), nothing)
+	wantCycles(t, s, "[ 10m56s  10m56s]")
+}
+
+// A late Gap corrects only the machines of its own agent instance, and only once.
+func TestFindNewCyclesLateGapOtherAgent(t *testing.T) {
+	s := openTestStore(t)
+	mazak := []mtconnect.Observation{
+		program(-11*time.Minute, "M1"), parts(-10*time.Minute, "0"), parts(5*time.Minute, "1"),
+		parts(8*time.Hour, "2"), // a Cycle over the same hours as the Okuma's Gap, on another agent
+	}
+	for i := range mazak {
+		mazak[i] = numbered(8, uint64(i+1), mazak[i])
+		mazak[i].Device, mazak[i].DeviceUUID = "MAZAK", "MAZAK"
+	}
+	housekeepEach(t, s, insert(s, slices.Concat(acrossGap, mazak)), insertGap(s, behind[0]), nothing)
+	wantCycles(t, s, "[ 10m56s M1 7h55m0s  10m56s]")
+}
+
+// The same machine's Cycles from an earlier agent instance stay.
+func TestFindNewCyclesLateGapOtherInstance(t *testing.T) {
+	s := openTestStore(t)
+	earlier := []mtconnect.Observation{
+		numbered(6, 1, parts(-3*time.Hour, "0")),
+		numbered(6, 2, parts(-2*time.Hour-50*time.Minute, "1")),
+		numbered(6, 3, parts(-2*time.Hour-39*time.Minute-4*time.Second, "2")),
+	}
+	housekeepEach(t, s, insert(s, slices.Concat(earlier, acrossGap)), insertGap(s, behind[0]), nothing)
+	wantCycles(t, s, "[ 10m56s  10m56s  10m56s]")
+}
+
+// The machine's last observation before the Gap came from an earlier snapshot,
+// so its time is older than the Cycle before it: the times say nothing about
+// where the Gap lies, the agent's numbering does.
+func TestFindNewCyclesLateGapStaleBefore(t *testing.T) {
+	s := openTestStore(t)
+	obs := []mtconnect.Observation{
+		numbered(7, 96, parts(-10*time.Minute, "0")),
+		numbered(7, 97, parts(0, "1")),
+		numbered(7, 98, parts(10*time.Minute+56*time.Second, "2")),
+		numbered(7, 99, run(5*time.Minute, "ACTIVE")), // from a snapshot: the time ACTIVE began
+		// the Gap: sequences 100 to 899 never collected
+		numbered(7, 850, parts(7*time.Hour+56*time.Minute, "45")),
+		numbered(7, 901, parts(8*time.Hour+6*time.Minute+56*time.Second, "46")),
+	}
+	g := mtconnect.Gap{InstanceID: 7, From: 100, ResumedAt: 900, Missed: 800, Reason: mtconnect.GapFellBehind}
+	housekeepEach(t, s, insert(s, obs), insertGap(s, g), nothing)
+	wantCycles(t, s, "[ 10m56s  10m56s]")
+}
+
+// A Gap in a later epoch than the machine's last observation before it still
+// starts a new batch (ADR 0005), whether it arrives on time or late.
+func TestFindNewCyclesGapAfterEarlierEpoch(t *testing.T) {
+	next := []mtconnect.Observation{numbered(7, 850, parts(7*time.Hour+56*time.Minute, "45")),
+		numbered(7, 901, parts(8*time.Hour+6*time.Minute+56*time.Second, "46"))}
+	for i := range next {
+		next[i].Epoch = 1
+	}
+	g := mtconnect.Gap{InstanceID: 7, Epoch: 1, From: 1, ResumedAt: 800, ResumedEpoch: 1, Missed: 799, Reason: mtconnect.GapFellBehind}
+	obs := slices.Concat(acrossGap[:3], next)
+	for name, steps := range map[string][]func(*Store) func() error{
+		"on time": {func(s *Store) func() error { return insertGap(s, g) }, func(s *Store) func() error { return insert(s, obs) }},
+		"late":    {func(s *Store) func() error { return insert(s, obs) }, func(s *Store) func() error { return insertGap(s, g) }},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := openTestStore(t)
+			housekeepEach(t, s, steps[0](s), steps[1](s), nothing)
+			wantCycles(t, s, "[ 10m56s  10m56s]")
+		})
 	}
 }
 

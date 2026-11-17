@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"math"
+	"slices"
 	"time"
 
 	"github.com/camdnn/factory-edge-gateway/internal/mtconnect"
@@ -72,7 +73,8 @@ func housekeep(ctx context.Context, store *Store, state *pipelineState, pinger *
 }
 
 // findNewCycles finds Cycles in up to limit stored observations past each
-// machine's progress and stores them with the progress, in one go.
+// machine's progress and stores them with the progress, in one go. First it
+// corrects each machine for Gaps stored after it had worked past them (ADR 0006).
 func findNewCycles(store *Store, continuous map[string]bool, limit int) error {
 	progress, err := store.CycleProgress()
 	if err != nil {
@@ -88,37 +90,73 @@ func findNewCycles(store *Store, continuous map[string]bool, limit int) error {
 			machines[o.Device] = true
 		}
 	}
+	stored, err := store.GapArrivals()
+	if err != nil {
+		return err
+	}
+	gaps := make([]mtconnect.Gap, len(stored))
+	var newest int64
+	for i, g := range stored {
+		gaps[i], newest = g.Gap, max(newest, g.Row)
+	}
+
+	var late []LateGap
+	saved := map[string]CycleProgress{}
+	for m := range machines {
+		p := progress[m]
+		if p.GapsSeen >= newest {
+			continue
+		}
+		for _, g := range stored {
+			if g.Row <= p.GapsSeen {
+				continue
+			}
+			parts, isLate, err := store.Late(m, g.Gap, p.After)
+			if err != nil {
+				return err
+			}
+			if !isLate {
+				continue // between places it when housekeeping gets there
+			}
+			late = append(late, LateGap{Machine: m, Parts: parts})
+			if !p.Last.IsZero() && !slices.ContainsFunc(parts, p.Last.Equal) {
+				p.Last = time.Time{} // still timing from a part before the Gap: start a new batch
+			}
+		}
+		p.GapsSeen = newest
+		progress[m], saved[m] = p, p
+	}
+
 	// start from the machine furthest behind; one never worked on starts from the beginning
 	from := int64(math.MaxInt64)
 	for m := range machines {
 		from = min(from, progress[m].After)
 	}
 	arrivals, err := store.CycleObservations(from, limit)
-	if err != nil || len(arrivals) == 0 {
-		return err
-	}
-	gaps, err := store.Gaps()
 	if err != nil {
 		return err
 	}
-
-	byMachine := map[string][]mtconnect.Observation{}
-	for _, a := range arrivals {
-		if machines[a.Device] && a.Row > progress[a.Device].After {
-			byMachine[a.Device] = append(byMachine[a.Device], a.Observation)
-		}
-	}
-	end := arrivals[len(arrivals)-1].Row
 	var cycles []Cycle
-	saved := map[string]CycleProgress{}
-	for m := range machines {
-		if progress[m].After >= end {
-			continue
+	if len(arrivals) > 0 {
+		byMachine := map[string][]mtconnect.Observation{}
+		for _, a := range arrivals {
+			if machines[a.Device] && a.Row > progress[a.Device].After {
+				byMachine[a.Device] = append(byMachine[a.Device], a.Observation)
+			}
 		}
-		found, p := findCycles(byMachine[m], gaps, progress[m], continuous[m])
-		p.After = end
-		cycles = append(cycles, found...)
-		saved[m] = p
+		end := arrivals[len(arrivals)-1].Row
+		for m := range machines {
+			if progress[m].After >= end {
+				continue
+			}
+			found, p := findCycles(byMachine[m], gaps, progress[m], continuous[m])
+			p.After = end
+			cycles = append(cycles, found...)
+			saved[m] = p
+		}
 	}
-	return store.SaveCycles(cycles, saved)
+	if len(saved) == 0 {
+		return nil
+	}
+	return store.SaveCycles(late, cycles, saved)
 }
