@@ -60,7 +60,7 @@ The board's **Cycle monitor** section, below the machines table, draws the same 
 
 - One row per Okuma Program, each showing the Program, its latest Cycle time (e.g. `19s`, `10m 56s`) and its last 10 Cycles as bars, oldest on the left, scaled to the row's longest Cycle.
 - One `Mazak` row reading "No cycles yet.": its part count never increases.
-- "Learning (n/10)" and grey bars while a Program has fewer than 10 non-Interrupted Cycles, and red bars for Interrupted Cycles. On the live Okuma feed every Program is past Learning within a few hours. Grey is decided per row: once a Program reaches 10/10, its earlier Learning bars turn the normal colour, because `cycles` carries no per-Cycle health yet.
+- "Learning (n/10)" and grey bars while a Program has fewer than 10 non-Interrupted Cycles, and red bars for Interrupted Cycles. Once a Program has 10, its row reads "Learning complete (10/10)"; on the live Okuma feed every Program gets there within a few hours. Grey is decided per row: once a Program reaches 10/10, its earlier Learning bars turn the normal colour, because `cycles` carries no per-Cycle health yet.
 - No buttons, links or other controls: the board is read-only.
 - Machine names read as the agents report them, so `SIM-MILL` sits apart from `OKUMA` and `Mazak`.
 

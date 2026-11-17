@@ -144,7 +144,7 @@ function renderCycles(ms, cs) {
       const longest = Math.max(...last.map(r => r.seconds));
       const bars = last.map(r => `<span class="${r.interrupted ? "interrupted" : learnt ? "" : "learning"}" style="height:${Math.max(4, r.seconds / longest * 100)}%" title="${duration(r.seconds)}${r.interrupted ? " · Interrupted" : ""}"></span>`).join("");
       return `<tr><td class="name">${esc(n)}</td><td>${esc(c.program)}</td><td class="num">${duration(c.recent[0].seconds)}</td>
-        <td class="muted">${learnt ? "" : `Learning (${c.learning}/${c.learn_from})`}</td><td><div class="bars">${bars}</div></td></tr>`;
+        <td class="muted">${learnt ? "Learning complete" : "Learning"} (${c.learning}/${c.learn_from})</td><td><div class="bars">${bars}</div></td></tr>`;
     });
   }).join("") || `<tr><td colspan="5" class="muted">No machines yet.</td></tr>`;
 }
