@@ -332,13 +332,20 @@ func (s *Store) scanGaps(query string, args ...any) ([]GapArrival, error) {
 	return out, rows.Err()
 }
 
+// beforeSQL is a SQL condition that an observation's Position comes before p,
+// and its arguments. Its negation is "at or past p", which includes observations
+// in other instances. It must agree with mtconnect.Position.Before.
+func beforeSQL(p mtconnect.Position) (string, []any) {
+	return `(instance_id = ? AND (epoch < ? OR (epoch = ? AND sequence < ?)))`, []any{p.Instance, p.Epoch, p.Epoch, p.Sequence}
+}
+
 // Late reports whether Gap g is late for machine: housekeeping has worked
 // through, up to row upTo, the machine's first stored observation past the Gap
 // (ADR 0006). If so, parts holds the agent times of the machine's part count
 // increases past the Gap, up to upTo.
 func (s *Store) Late(machine string, g mtconnect.Gap, upTo int64) (parts []time.Time, late bool, err error) {
 	// before and past the Gap as between places them, by Position
-	cond, condArgs := g.Start().BeforeSQL()
+	cond, condArgs := beforeSQL(g.Start())
 	before := cond + ` AND device = ?`
 	beforeArgs := append(slices.Clone(condArgs), machine)
 	var row int64

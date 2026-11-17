@@ -24,11 +24,3 @@ func (o Observation) Position() Position {
 func (g Gap) Start() Position {
 	return Position{Instance: g.InstanceID, Epoch: g.Epoch, Sequence: g.From}
 }
-
-// BeforeSQL is a SQL condition that a row's Position comes before p, and its
-// arguments, for a table with instance_id, epoch and sequence columns. Its
-// negation is "at or past p", which includes rows in other instances. It must
-// agree with Before.
-func (p Position) BeforeSQL() (string, []any) {
-	return `(instance_id = ? AND (epoch < ? OR (epoch = ? AND sequence < ?)))`, []any{p.Instance, p.Epoch, p.Epoch, p.Sequence}
-}
