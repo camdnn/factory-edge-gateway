@@ -52,6 +52,13 @@
   .dot.Alarm { background: var(--bad); } .dot.Warning { background: var(--warn); } .dot.Offline { background: var(--off); } .dot.OK { background: var(--ok); } .dot.gap { background: #8ab4ff; }
   footer { margin-top: 14px; font-size: 12px; color: var(--muted); }
 
+  /* Cycle monitor */
+  .cycles { margin-top: 24px; }
+  .cycles td { vertical-align: middle; }
+  .bars { display: flex; align-items: flex-end; gap: 3px; height: 28px; }
+  .bars span { width: 8px; border-radius: 2px 2px 0 0; background: var(--fg); }
+  .bars span.learning { background: var(--off); } .bars span.interrupted { background: var(--bad); }
+
   .sub, .ev, td { overflow-wrap: anywhere; }
   @media (max-width: 1000px) {
     .wrap { grid-template-columns: 1fr; min-height: 0; } aside { border-left: 0; border-top: 1px solid var(--line); }
@@ -74,6 +81,13 @@
         <th class="hide-narrow">Parts</th><th class="hide-narrow">Program</th><th>Last observation</th></tr></thead>
       <tbody id="machines"><tr><td colspan="8" class="muted">Loading…</td></tr></tbody>
     </table>
+    <section class="cycles" aria-label="Cycle monitor">
+      <h3>Cycle monitor</h3>
+      <table>
+        <thead><tr><th>Machine</th><th>Program</th><th>Latest cycle</th><th>Learning</th><th>Last 10 cycles</th></tr></thead>
+        <tbody id="cycles"></tbody>
+      </table>
+    </section>
     <footer id="footer"></footer>
   </main>
   <aside><h3>Recent events</h3><div id="events"></div></aside>
@@ -116,6 +130,25 @@ function renderMachines(ms) {
     }</div></td></tr>` : ""}`).join("") || `<tr><td colspan="8" class="muted">No machines yet. Is the edge producer running?</td></tr>`;
 }
 
+const duration = sec => { const s = Math.round(sec); return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, "0")}s`; };
+
+// one row per machine and Program; a machine without Cycles still gets a row, so every machine is accounted for
+function renderCycles(ms, cs) {
+  const names = [...new Set([...ms.map(m => m.name), ...cs.map(c => c.machine)])].sort();
+  document.getElementById("cycles").innerHTML = names.flatMap(n => {
+    const rows = cs.filter(c => c.machine === n);
+    if (!rows.length) return [`<tr><td class="name">${esc(n)}</td><td colspan="4" class="muted">No cycles yet.</td></tr>`];
+    return rows.map(c => {
+      const learnt = c.learning >= c.learn_from;
+      const last = [...c.recent].reverse(); // oldest first, so the newest bar is on the right
+      const longest = Math.max(...last.map(r => r.seconds));
+      const bars = last.map(r => `<span class="${r.interrupted ? "interrupted" : learnt ? "" : "learning"}" style="height:${Math.max(4, r.seconds / longest * 100)}%" title="${duration(r.seconds)}${r.interrupted ? " · Interrupted" : ""}"></span>`).join("");
+      return `<tr><td class="name">${esc(n)}</td><td>${esc(c.program)}</td><td class="num">${duration(c.recent[0].seconds)}</td>
+        <td class="muted">${learnt ? "" : `Learning (${c.learning}/${c.learn_from})`}</td><td><div class="bars">${bars}</div></td></tr>`;
+    });
+  }).join("") || `<tr><td colspan="5" class="muted">No machines yet.</td></tr>`;
+}
+
 function renderEvents(evs) {
   document.getElementById("events").innerHTML = evs.map(e => e.kind === "gap"
     ? `<div class="ev"><time>${clock(e.at)}</time><span class="dot gap"></span>Gap · ${esc(gapText(e.gap))}</div>`
@@ -131,6 +164,7 @@ async function refresh() {
     await Promise.all([...open].map(async n => { details[n] = await (await fetch(`api/machines/${encodeURIComponent(n)}`)).json(); }));
     renderPipeline(b.pipeline);
     renderMachines(b.machines);
+    renderCycles(b.machines, b.cycles);
     renderEvents(b.events);
     document.getElementById("footer").textContent = `${b.stored.toLocaleString()} observations received`;
     const worst = b.machines[0]?.status ?? "OK";

@@ -54,6 +54,18 @@ sqlite3 observations.db "SELECT count(*), sum(length(program||start||end||interr
 | Restart | Take the fingerprint, stop the consumer, start it again, wait a few seconds | The same fingerprint, unless a part finished meanwhile |
 | Rebuild | With the consumer running, `sqlite3 -cmd ".timeout 5000" observations.db "DELETE FROM cycles; DELETE FROM cycle_progress"`, wait a few seconds | The same fingerprint: housekeeping works through the stored observations again on its next tick |
 
+### Cycle monitor
+
+The board's **Cycle monitor** section, below the machines table, draws the same `cycles` rows. On the live feed, look for:
+
+- One row per Okuma Program, each showing the Program, its latest Cycle time (e.g. `19s`, `10m 56s`) and its last 10 Cycles as bars, oldest on the left, scaled to the row's longest Cycle.
+- One `Mazak` row reading "No cycles yet.": its part count never increases.
+- "Learning (n/10)" and grey bars while a Program has fewer than 10 non-Interrupted Cycles, and red bars for Interrupted Cycles. On the live Okuma feed every Program is past Learning within a few hours. Grey is decided per row: once a Program reaches 10/10, its earlier Learning bars turn the normal colour, because `cycles` carries no per-Cycle health yet.
+- No buttons, links or other controls: the board is read-only.
+- Machine names read as the agents report them, so `SIM-MILL` sits apart from `OKUMA` and `Mazak`.
+
+A single Cycle much longer than the rest (such as an hours-long Cycle of the TRAN Program) flattens that row's other bars. That is the scaling working, not a bug.
+
 A rebuild covers only observations still within the 7-day retention, so Cycles older than that are lost for good once cleared. A Gap starts a new batch (ADR 0004), so no Cycle is ever timed across one: a Cycle far longer than its Program's normal time is real, not a Gap. A Gap can reach the consumer in a later Kafka fetch than the observations after it, after housekeeping has worked past them. Housekeeping then deletes the one Cycle per machine that spans the Gap, and starts a new batch if a machine is still timing from a part before it (ADR 0006), so no rebuild is needed.
 
 Checked on 2026-11-11 against a copy of a database holding observations from 2026-11-10 to 2026-11-11: 208 Okuma Cycles in 4 Programs, none Interrupted, and the same 208 after a restart and after a rebuild. Rebuilt on the same copy once a Gap started a new batch: 206 Cycles, the 7.9 h and 1.9 h Cycles across that day's two Gaps gone, every other Cycle within a second of its Program's normal time.
